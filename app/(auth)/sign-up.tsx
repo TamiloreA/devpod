@@ -31,6 +31,8 @@ import {
   Github,
 } from 'lucide-react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { supabase } from '@/lib/supabase';
+import { router } from 'expo-router';
 
 export default function SignUpScreen() {
   const [displayName, setDisplayName] = useState('');
@@ -103,13 +105,55 @@ export default function SignUpScreen() {
     buttonScale.value = withSpring(0.96, { duration: 90 }, () => {
       buttonScale.value = withSpring(1);
     });
-
-    if (!validate()) return;
-    setSubmitting(true);
-    try {
   
-    } catch (e) {
-      setErrors((prev) => ({ ...prev, email: 'Sign up failed. Try a different email.' }));
+    if (!validate()) return;
+  
+    setSubmitting(true);
+    setErrors((prev) => ({ ...prev, email: undefined, password: undefined }));
+  
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email: email.trim().toLowerCase(),
+        password,
+        options: {
+          data: {
+            display_name: displayName?.trim(),
+            level, 
+          },
+        },
+      });
+  
+      if (error) {
+        let msg = error.message;
+        if (/already registered|user already exists/i.test(msg)) msg = 'Email is already registered.';
+        if (/password/i.test(msg)) msg = 'Password does not meet requirements.';
+        setErrors((prev) => ({ ...prev, email: msg }));
+        return;
+      }
+  
+      const userId = data.user?.id;
+  
+      if (data.session && userId) {
+        const { error: upsertErr } = await supabase.from('profiles').upsert({
+          id: userId,
+          email: email.trim().toLowerCase(),
+          display_name: displayName?.trim(),
+          level,
+        });
+        if (upsertErr) {
+          console.warn('Profile upsert failed:', upsertErr.message);
+        }
+        router.replace('/(tabs)');
+        return;
+      }
+
+      alert('Check your email to confirm your account.');
+      router.replace('/(auth)/sign-in');
+    } catch (e: any) {
+      setErrors((prev) => ({
+        ...prev,
+        email: e?.message ?? 'Sign up failed. Try a different email.',
+      }));
     } finally {
       setSubmitting(false);
     }

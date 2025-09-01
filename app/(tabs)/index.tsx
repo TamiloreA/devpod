@@ -35,10 +35,12 @@ import Chip from '@/components/ui/Chip';
 import AvatarStack from '@/components/ui/AvatarStack';
 import EmptyState from '@/components/ui/EmptyState';
 import { Ionicons } from '@expo/vector-icons';
+import { useHomeData } from '@/hooks/useHomeData';
 
 const { width } = Dimensions.get('window');
 
 export default function HomeScreen() {
+  const { data, loading } = useHomeData();
   const pulseValue = useSharedValue(1);
   const [loadingJoin, setLoadingJoin] = React.useState(false);
 
@@ -59,49 +61,13 @@ export default function HomeScreen() {
     setTimeout(() => setLoadingJoin(false), 800);
   };
 
-  const user = { name: 'Sarah', streak: 7 };
-  const todayStandup = {
-    time: '9:00 AM',
-    pod: 'React Natives',
-    members: ['Alex', 'Sam', 'Jordan', 'Casey'],
-  };
-  const coachHint =
-    'Yesterday you wrapped auth fixes. Suggestion: ship a smoke test before integrating push.';
-  const podSnapshot = {
-    name: 'React NG-1',
-    tz: 'Lagos ±2h',
-    tags: ['#nextjs', '#node', '#perf', '#firebase'],
-    members: [
-      'https://i.pravatar.cc/100?img=1',
-      'https://i.pravatar.cc/100?img=2',
-      'https://i.pravatar.cc/100?img=3',
-      'https://i.pravatar.cc/100?img=4',
-      'https://i.pravatar.cc/100?img=5',
-    ],
-  };
-  const shipLogPreview = [
-    {
-      who: 'You',
-      y: ['Fix auth redirect'],
-      t: ['Integrate push tokens'],
-      b: ['Token refresh'],
-      tags: ['#react', '#push'],
-      ago: '1h',
-    },
-    {
-      who: 'Mercy',
-      y: ['Improve a11y on forms'],
-      t: ['Refactor input states'],
-      b: [],
-      tags: ['#a11y'],
-      ago: '3h',
-    },
-  ];
-  const recentActivities = [
-    { type: 'standup', pod: 'React Natives', time: '2 hours ago' },
-    { type: 'blocker', title: 'Redux state issue', time: '4 hours ago' },
-    { type: 'help', helper: 'Alex M.', time: '6 hours ago' },
-  ];
+  const user = data?.user ?? { name: '—', streak: 0 };
+  const todayStandup = data?.todayStandup ?? { time: '—', pod: '—', members: [] as string[] };
+  const coachHint = data?.coachHint ?? '';
+  const podSnapshot = data?.podSnapshot ?? { name: '—', tz: '—', tags: [] as string[], members: [] as string[] };
+  const shipLogPreview = data?.shipLogPreview ?? [];
+  const recentActivities = data?.recentActivities ?? [];
+  const counts = data?.counts ?? { podMembers: 0, standups: 0, openBlockers: 0 };
 
   const a11yKillProps = {
     accessible: false as const,
@@ -121,6 +87,7 @@ export default function HomeScreen() {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
+          {/* Header */}
           <Animated.View entering={FadeInDown.delay(200).springify()} style={styles.header}>
             <Text style={styles.greeting}>Good morning</Text>
             <Text style={styles.username}>{user.name}</Text>
@@ -130,6 +97,7 @@ export default function HomeScreen() {
             </View>
           </Animated.View>
 
+          {/* Coach */}
           <Animated.View entering={FadeInDown.delay(240).springify()} style={styles.cardContainer}>
             <GlassCard
               title="Coach"
@@ -144,6 +112,7 @@ export default function HomeScreen() {
             </GlassCard>
           </Animated.View>
 
+          {/* Quick Row */}
           <Animated.View entering={FadeInDown.delay(280).springify()} style={styles.quickRow}>
             <GlassCard
               title="Quick Join"
@@ -152,7 +121,6 @@ export default function HomeScreen() {
               style={styles.quickCard}
             >
               <Text style={styles.quickMeta}>{todayStandup.time} • 2m each</Text>
-
               <View style={styles.cardFooter}>
                 <View {...a11yKillProps}>
                   <Pressable
@@ -178,7 +146,6 @@ export default function HomeScreen() {
               style={styles.quickCard}
             >
               <Text style={styles.quickMeta}>We’ll suggest helpers</Text>
-
               <View style={styles.cardFooter}>
                 <View {...a11yKillProps}>
                   <Pressable
@@ -187,13 +154,16 @@ export default function HomeScreen() {
                     onPress={() => {}}
                     style={({ pressed }) => [styles.footerBtnSecondary, pressed && { opacity: 0.95 }]}
                   >
-                    <Text selectable={false} style={styles.footerBtnSecondaryText}>Raise</Text>
+                    <Text selectable={false} style={styles.footerBtnSecondaryText}>
+                      Raise
+                    </Text>
                   </Pressable>
                 </View>
               </View>
             </GlassCard>
           </Animated.View>
 
+          {/* Your Pod (now fully dynamic) */}
           <Animated.View entering={FadeInDown.delay(320).springify()} style={styles.cardContainer}>
             <GlassCard title="Your Pod" subtitle={`${podSnapshot.name} • ${podSnapshot.tz}`}>
               <View style={styles.podTopRow}>
@@ -203,18 +173,21 @@ export default function HomeScreen() {
 
                 <View style={styles.podStatsRow}>
                   <StatPill icon="flame" value={user.streak} label="day streak" />
-                  <StatPill icon="people" value={podSnapshot.members.length} label="members" />
+                  <StatPill icon="people" value={counts.podMembers} label="members" />
                 </View>
               </View>
 
               <View style={styles.chipsRow}>
-                {podSnapshot.tags.map((t) => (
-                  <Chip key={t} text={t} />
-                ))}
+                {podSnapshot.tags.length ? (
+                  podSnapshot.tags.map((t) => <Chip key={t} text={t} />)
+                ) : (
+                  <Chip text="#getting-started" />
+                )}
               </View>
             </GlassCard>
           </Animated.View>
 
+          {/* Next Standup */}
           <Animated.View entering={FadeInDown.delay(360).springify()} style={styles.cardContainer}>
             <BlurView intensity={20} style={styles.cardGlass}>
               <View style={styles.card}>
@@ -234,18 +207,16 @@ export default function HomeScreen() {
                 <View style={styles.membersRow}>
                   {todayStandup.members.slice(0, 3).map((member, index) => (
                     <Animated.View
-                      key={member}
+                      key={`${member}-${index}`}
                       entering={FadeInRight.delay(400 + index * 100).springify()}
                       style={[styles.memberAvatar, { zIndex: 3 - index, marginLeft: index * -8 }]}
                     >
-                      <Text style={styles.memberInitial}>{member[0]}</Text>
+                      <Text style={styles.memberInitial}>{member[0] ?? '?'}</Text>
                     </Animated.View>
                   ))}
                   {todayStandup.members.length > 3 && (
                     <View style={styles.memberCount}>
-                      <Text style={styles.memberCountText}>
-                        +{todayStandup.members.length - 3}
-                      </Text>
+                      <Text style={styles.memberCountText}>+{todayStandup.members.length - 3}</Text>
                     </View>
                   )}
                 </View>
@@ -269,11 +240,12 @@ export default function HomeScreen() {
             </BlurView>
           </Animated.View>
 
+          {/* Stats Cards — now dynamic */}
           <Animated.View entering={FadeInDown.delay(420).springify()} style={styles.statsGrid}>
             <BlurView intensity={15} style={styles.statGlass}>
               <View style={styles.statCard}>
                 <Users color="#ffffff" size={24} />
-                <Text style={styles.statNumber}>4</Text>
+                <Text style={styles.statNumber}>{counts.podMembers}</Text>
                 <Text style={styles.statLabel}>Pod Members</Text>
               </View>
             </BlurView>
@@ -281,7 +253,7 @@ export default function HomeScreen() {
             <BlurView intensity={15} style={styles.statGlass}>
               <View style={styles.statCard}>
                 <TrendingUp color="#00ff88" size={24} />
-                <Text style={styles.statNumber}>12</Text>
+                <Text style={styles.statNumber}>{counts.standups}</Text>
                 <Text style={styles.statLabel}>Standups</Text>
               </View>
             </BlurView>
@@ -289,16 +261,17 @@ export default function HomeScreen() {
             <BlurView intensity={15} style={styles.statGlass}>
               <View style={styles.statCard}>
                 <AlertTriangle color="#ff6b6b" size={24} />
-                <Text style={styles.statNumber}>3</Text>
+                <Text style={styles.statNumber}>{counts.openBlockers}</Text>
                 <Text style={styles.statLabel}>Open Blockers</Text>
               </View>
             </BlurView>
           </Animated.View>
 
+          {/* Ship Log */}
           <Animated.View entering={FadeInDown.delay(460).springify()} style={styles.cardContainer}>
             <GlassCard title="Ship Log" subtitle="Summaries from AI Scribe">
               {shipLogPreview.map((e, i) => (
-                <View key={i} style={styles.logRow}>
+                <View key={`${e.who}-${i}`} style={styles.logRow}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.logWho}>{e.who}</Text>
                     <Text style={styles.logLine}>• Yesterday: {e.y.join(', ')}</Text>
@@ -306,7 +279,7 @@ export default function HomeScreen() {
                     {e.b.length ? <Text style={styles.logBlocker}>• Blockers: {e.b.join(', ')}</Text> : null}
                     <View style={styles.chipsRow}>
                       {e.tags.map((t) => (
-                        <Chip key={t} text={t} />
+                        <Chip key={t} text={`#${t.replace(/^#*/, '')}`} />
                       ))}
                     </View>
                   </View>
@@ -316,6 +289,7 @@ export default function HomeScreen() {
             </GlassCard>
           </Animated.View>
 
+          {/* Recent Activity */}
           <Animated.View entering={FadeInDown.delay(500).springify()} style={styles.cardContainer}>
             <BlurView intensity={20} style={styles.cardGlass}>
               <View style={styles.card}>
@@ -328,16 +302,16 @@ export default function HomeScreen() {
 
                 {recentActivities.map((activity, index) => (
                   <Animated.View
-                    key={index}
+                    key={`${activity.type}-${index}`}
                     entering={FadeInDown.delay(600 + index * 100).springify()}
                     style={styles.activityItem}
                   >
                     <View style={styles.activityDot} />
                     <View style={styles.activityContent}>
                       <Text style={styles.activityText}>
-                        {activity.type === 'standup' && `Standup completed in ${activity.pod}`}
-                        {activity.type === 'blocker' && `New blocker: ${activity.title}`}
-                        {activity.type === 'help' && `Received help from ${activity.helper}`}
+                        {activity.type === 'standup'
+                          ? `Standup completed in ${activity.pod}`
+                          : `New blocker: ${activity.title ?? ''}`}
                       </Text>
                       <Text style={styles.activityTime}>{activity.time}</Text>
                     </View>
@@ -346,8 +320,8 @@ export default function HomeScreen() {
               </View>
             </BlurView>
           </Animated.View>
-{/* 
-          <EmptyState title="No upcoming standups" subtitle="Create or join a pod to get started." /> */}
+
+          {/* <EmptyState title="No upcoming standups" subtitle="Create or join a pod to get started." /> */}
         </ScrollView>
       </LinearGradient>
     </View>
@@ -482,19 +456,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    flexWrap: 'wrap',              
+    flexWrap: 'wrap',
     gap: 8 as any,
   },
-  podAvatars: {
-    flexShrink: 0,                 
-  },
+  podAvatars: { flexShrink: 0 },
   podStatsRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
     gap: 8 as any,
-    flexShrink: 1,                
-    maxWidth: '65%',               
+    flexShrink: 1,
+    maxWidth: '65%',
   },
 
   logRow: {

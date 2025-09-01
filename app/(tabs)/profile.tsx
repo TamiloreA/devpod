@@ -24,6 +24,9 @@ import {
   Github,
   Slack,
 } from 'lucide-react-native';
+import { ActivityIndicator, Alert } from 'react-native';
+import { router } from 'expo-router';
+import { supabase } from '@/lib/supabase';
 
 const { width } = Dimensions.get('window');
 
@@ -65,6 +68,7 @@ export default function ProfileScreen() {
     },
   ];
 
+  const [signingOut, setSigningOut] = useState(false);
   const [dnd, setDnd] = useState(false);
   const [reminders, setReminders] = useState(true);
   const [aiTips, setAiTips] = useState(true);
@@ -97,22 +101,45 @@ export default function ProfileScreen() {
     { id: 'p3', name: 'Expo Router Crew', period: '2024 Q1' },
   ];
 
+  const handleSignOut = async () => {
+    try {
+      setSigningOut(true);
+      await supabase.auth.signOut();
+      // Optional: if you want to also invalidate sessions on other devices, use:
+      // await supabase.auth.signOut({ scope: 'global' });
+      router.replace('/(auth)/sign-in');
+    } catch (e: any) {
+      Alert.alert('Sign out failed', e?.message ?? 'Please try again.');
+    } finally {
+      setSigningOut(false);
+    }
+  };
+
   return (
     <View style={styles.container}>
-      <LinearGradient colors={['#000000', '#0a0a0a', '#000000']} style={styles.gradient}>
+      <LinearGradient
+        colors={['#000000', '#0a0a0a', '#000000']}
+        style={styles.gradient}
+      >
         <ScrollView
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          <Animated.View entering={FadeInDown.delay(200).springify()} style={styles.header}>
+          <Animated.View
+            entering={FadeInDown.delay(200).springify()}
+            style={styles.header}
+          >
             <Text style={styles.title}>Profile</Text>
             <TouchableOpacity style={styles.settingsButton}>
               <Settings color="#ffffff" size={20} />
             </TouchableOpacity>
           </Animated.View>
 
-          <Animated.View entering={FadeInDown.delay(280).springify()} style={styles.cardContainer}>
+          <Animated.View
+            entering={FadeInDown.delay(280).springify()}
+            style={styles.cardContainer}
+          >
             <BlurView intensity={25} style={styles.profileCardGlass}>
               <View style={styles.profileCard}>
                 <View style={styles.profileHeader}>
@@ -130,16 +157,26 @@ export default function ProfileScreen() {
                       <View
                         style={[
                           styles.levelBadge,
-                          { backgroundColor: getLevelColor(userStats.level) + '20' },
+                          {
+                            backgroundColor:
+                              getLevelColor(userStats.level) + '20',
+                          },
                         ]}
                       >
-                        <Text style={[styles.levelText, { color: getLevelColor(userStats.level) }]}>
+                        <Text
+                          style={[
+                            styles.levelText,
+                            { color: getLevelColor(userStats.level) },
+                          ]}
+                        >
                           {userStats.level} Developer
                         </Text>
                       </View>
                       <View style={styles.locationRow}>
                         <MapPin color="#666666" size={12} />
-                        <Text style={styles.timezone}>{userStats.timezone}</Text>
+                        <Text style={styles.timezone}>
+                          {userStats.timezone}
+                        </Text>
                       </View>
                     </View>
                   </View>
@@ -156,12 +193,17 @@ export default function ProfileScreen() {
             </BlurView>
           </Animated.View>
 
-          <Animated.View entering={FadeInDown.delay(340).springify()} style={styles.statsContainer}>
+          <Animated.View
+            entering={FadeInDown.delay(340).springify()}
+            style={styles.statsContainer}
+          >
             <View style={styles.statsGrid}>
               <BlurView intensity={15} style={styles.statGlass}>
                 <View style={styles.statCard}>
                   <Clock color="#ffffff" size={20} />
-                  <Text style={styles.statNumber}>{userStats.totalStandups}</Text>
+                  <Text style={styles.statNumber}>
+                    {userStats.totalStandups}
+                  </Text>
                   <Text style={styles.statLabel}>Standups</Text>
                 </View>
               </BlurView>
@@ -169,7 +211,9 @@ export default function ProfileScreen() {
               <BlurView intensity={15} style={styles.statGlass}>
                 <View style={styles.statCard}>
                   <Star color="#ffaa00" size={20} />
-                  <Text style={styles.statNumber}>{userStats.helpProvided}</Text>
+                  <Text style={styles.statNumber}>
+                    {userStats.helpProvided}
+                  </Text>
                   <Text style={styles.statLabel}>Helped</Text>
                 </View>
               </BlurView>
@@ -184,7 +228,10 @@ export default function ProfileScreen() {
             </View>
           </Animated.View>
 
-          <Animated.View entering={FadeInDown.delay(420).springify()} style={styles.cardContainer}>
+          <Animated.View
+            entering={FadeInDown.delay(420).springify()}
+            style={styles.cardContainer}
+          >
             <BlurView intensity={20} style={styles.cardGlass}>
               <View style={styles.card}>
                 <View style={styles.cardHeader}>
@@ -194,7 +241,12 @@ export default function ProfileScreen() {
 
                 <Text style={styles.metaLabel}>Profile completeness</Text>
                 <View style={styles.progressBarTrack}>
-                  <View style={[styles.progressBarFill, { width: `${profileCompletion}%` }]} />
+                  <View
+                    style={[
+                      styles.progressBarFill,
+                      { width: `${profileCompletion}%` },
+                    ]}
+                  />
                 </View>
                 <Text style={styles.progressPct}>{profileCompletion}%</Text>
 
@@ -220,7 +272,10 @@ export default function ProfileScreen() {
             </BlurView>
           </Animated.View>
 
-          <Animated.View entering={FadeInDown.delay(500).springify()} style={styles.cardContainer}>
+          <Animated.View
+            entering={FadeInDown.delay(500).springify()}
+            style={styles.cardContainer}
+          >
             <BlurView intensity={20} style={styles.cardGlass}>
               <View style={styles.card}>
                 <View style={styles.cardHeader}>
@@ -242,7 +297,10 @@ export default function ProfileScreen() {
             </BlurView>
           </Animated.View>
 
-          <Animated.View entering={FadeInDown.delay(560).springify()} style={styles.cardContainer}>
+          <Animated.View
+            entering={FadeInDown.delay(560).springify()}
+            style={styles.cardContainer}
+          >
             <BlurView intensity={20} style={styles.cardGlass}>
               <View style={styles.card}>
                 <View style={styles.cardHeader}>
@@ -267,7 +325,10 @@ export default function ProfileScreen() {
             </BlurView>
           </Animated.View>
 
-          <Animated.View entering={FadeInDown.delay(620).springify()} style={styles.cardContainer}>
+          <Animated.View
+            entering={FadeInDown.delay(620).springify()}
+            style={styles.cardContainer}
+          >
             <BlurView intensity={20} style={styles.cardGlass}>
               <View style={styles.card}>
                 <View style={styles.cardHeader}>
@@ -302,7 +363,10 @@ export default function ProfileScreen() {
             </BlurView>
           </Animated.View>
 
-          <Animated.View entering={FadeInDown.delay(700).springify()} style={styles.cardContainer}>
+          <Animated.View
+            entering={FadeInDown.delay(700).springify()}
+            style={styles.cardContainer}
+          >
             <BlurView intensity={20} style={styles.cardGlass}>
               <View style={styles.card}>
                 <View style={styles.cardHeader}>
@@ -313,19 +377,27 @@ export default function ProfileScreen() {
                   <Animated.View
                     key={achievement.id}
                     entering={FadeInDown.delay(760 + index * 80).springify()}
-                    style={[styles.achievementRow, !achievement.unlocked && styles.achievementLocked]}
+                    style={[
+                      styles.achievementRow,
+                      !achievement.unlocked && styles.achievementLocked,
+                    ]}
                   >
-                    <Text style={styles.achievementIcon}>{achievement.icon}</Text>
+                    <Text style={styles.achievementIcon}>
+                      {achievement.icon}
+                    </Text>
                     <View style={styles.achievementInfo}>
                       <Text
                         style={[
                           styles.achievementTitle,
-                          !achievement.unlocked && styles.achievementTitleLocked,
+                          !achievement.unlocked &&
+                            styles.achievementTitleLocked,
                         ]}
                       >
                         {achievement.title}
                       </Text>
-                      <Text style={styles.achievementDescription}>{achievement.description}</Text>
+                      <Text style={styles.achievementDescription}>
+                        {achievement.description}
+                      </Text>
                     </View>
                     {achievement.unlocked && (
                       <View style={styles.unlockedBadge}>
@@ -338,7 +410,10 @@ export default function ProfileScreen() {
             </BlurView>
           </Animated.View>
 
-          <Animated.View entering={FadeInDown.delay(780).springify()} style={styles.cardContainer}>
+          <Animated.View
+            entering={FadeInDown.delay(780).springify()}
+            style={styles.cardContainer}
+          >
             <BlurView intensity={20} style={styles.cardGlass}>
               <View style={styles.card}>
                 <View style={styles.cardHeader}>
@@ -346,7 +421,13 @@ export default function ProfileScreen() {
                   <Text style={styles.cardTitle}>Pod History</Text>
                 </View>
                 {recentPods.map((p, idx) => (
-                  <View key={p.id} style={[styles.historyRow, idx < recentPods.length - 1 && styles.historyRowBorder]}>
+                  <View
+                    key={p.id}
+                    style={[
+                      styles.historyRow,
+                      idx < recentPods.length - 1 && styles.historyRowBorder,
+                    ]}
+                  >
                     <Text style={styles.historyName}>{p.name}</Text>
                     <Text style={styles.historyPeriod}>{p.period}</Text>
                   </View>
@@ -355,10 +436,24 @@ export default function ProfileScreen() {
             </BlurView>
           </Animated.View>
 
-          <Animated.View entering={FadeInDown.delay(840).springify()} style={styles.signOutContainer}>
-            <TouchableOpacity style={styles.signOutButton}>
-              <LogOut color="#ff6b6b" size={18} />
-              <Text style={styles.signOutText}>Sign Out</Text>
+          <Animated.View
+            entering={FadeInDown.delay(840).springify()}
+            style={styles.signOutContainer}
+          >
+            <TouchableOpacity
+              style={[styles.signOutButton, signingOut && { opacity: 0.6 }]}
+              onPress={handleSignOut}
+              disabled={signingOut}
+              activeOpacity={0.8}
+            >
+              {signingOut ? (
+                <ActivityIndicator color="#ff6b6b" />
+              ) : (
+                <LogOut color="#ff6b6b" size={18} />
+              )}
+              <Text style={styles.signOutText}>
+                {signingOut ? 'Signing out…' : 'Sign Out'}
+              </Text>
             </TouchableOpacity>
           </Animated.View>
         </ScrollView>
@@ -402,7 +497,11 @@ const styles = StyleSheet.create({
   profileCard: { padding: 24 },
   card: { padding: 20 },
 
-  profileHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 20 },
+  profileHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
   avatarContainer: { position: 'relative', marginRight: 16 },
   avatar: {
     width: 60,
@@ -426,7 +525,12 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#000000',
   },
-  onlineDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#00ff88' },
+  onlineDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#00ff88',
+  },
 
   profileInfo: { flex: 1 },
   profileName: {
@@ -435,11 +539,20 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     marginBottom: 8,
   },
-  profileMeta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  profileMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
   levelBadge: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12 },
   levelText: { fontSize: 12, fontFamily: 'Inter-SemiBold' },
   locationRow: { flexDirection: 'row', alignItems: 'center' },
-  timezone: { fontSize: 12, fontFamily: 'Inter-Regular', color: '#666666', marginLeft: 4 },
+  timezone: {
+    fontSize: 12,
+    fontFamily: 'Inter-Regular',
+    color: '#666666',
+    marginLeft: 4,
+  },
 
   streakSection: { alignItems: 'center' },
   streakCard: {
@@ -450,7 +563,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
   },
-  streakNumber: { fontSize: 32, fontFamily: 'Inter-SemiBold', color: '#ffffff', marginVertical: 4 },
+  streakNumber: {
+    fontSize: 32,
+    fontFamily: 'Inter-SemiBold',
+    color: '#ffffff',
+    marginVertical: 4,
+  },
   streakLabel: { fontSize: 12, fontFamily: 'Inter-Regular', color: '#999999' },
 
   statsContainer: { marginBottom: 8 },
@@ -465,11 +583,22 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.08)',
   },
   statCard: { padding: 16, alignItems: 'center' },
-  statNumber: { fontSize: 20, fontFamily: 'Inter-SemiBold', color: '#ffffff', marginTop: 8, marginBottom: 4 },
+  statNumber: {
+    fontSize: 20,
+    fontFamily: 'Inter-SemiBold',
+    color: '#ffffff',
+    marginTop: 8,
+    marginBottom: 4,
+  },
   statLabel: { fontSize: 10, fontFamily: 'Inter-Regular', color: '#999999' },
 
   cardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-  cardTitle: { fontSize: 16, fontFamily: 'Inter-SemiBold', color: '#ffffff', marginLeft: 8 },
+  cardTitle: {
+    fontSize: 16,
+    fontFamily: 'Inter-SemiBold',
+    color: '#ffffff',
+    marginLeft: 8,
+  },
 
   metaLabel: { color: '#cfcfcf', fontSize: 12, marginBottom: 6 },
   progressBarTrack: {
@@ -551,9 +680,18 @@ const styles = StyleSheet.create({
   achievementLocked: { opacity: 0.5 },
   achievementIcon: { fontSize: 24, marginRight: 16 },
   achievementInfo: { flex: 1 },
-  achievementTitle: { fontSize: 14, fontFamily: 'Inter-SemiBold', color: '#ffffff', marginBottom: 2 },
+  achievementTitle: {
+    fontSize: 14,
+    fontFamily: 'Inter-SemiBold',
+    color: '#ffffff',
+    marginBottom: 2,
+  },
   achievementTitleLocked: { color: '#666666' },
-  achievementDescription: { fontSize: 12, fontFamily: 'Inter-Regular', color: '#999999' },
+  achievementDescription: {
+    fontSize: 12,
+    fontFamily: 'Inter-Regular',
+    color: '#999999',
+  },
   unlockedBadge: {
     width: 24,
     height: 24,
@@ -563,8 +701,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
 
-  historyRow: { paddingVertical: 10, flexDirection: 'row', justifyContent: 'space-between' },
-  historyRowBorder: { borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.06)' },
+  historyRow: {
+    paddingVertical: 10,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  historyRowBorder: {
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.06)',
+  },
   historyName: { color: '#fff', fontFamily: 'Inter-Medium' },
   historyPeriod: { color: '#999' },
 
@@ -580,5 +725,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255, 107, 107, 0.2)',
   },
-  signOutText: { fontSize: 16, fontFamily: 'Inter-Medium', color: '#ff6b6b', marginLeft: 8 },
+  signOutText: {
+    fontSize: 16,
+    fontFamily: 'Inter-Medium',
+    color: '#ff6b6b',
+    marginLeft: 8,
+  },
 });

@@ -21,8 +21,17 @@ import Animated, {
   useAnimatedStyle,
   withSpring,
 } from 'react-native-reanimated';
-import { Mail, Lock, ArrowRight, Eye, EyeOff, Github } from 'lucide-react-native';
-import { Ionicons } from '@expo/vector-icons'; 
+import {
+  Mail,
+  Lock,
+  ArrowRight,
+  Eye,
+  EyeOff,
+  Github,
+} from 'lucide-react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { supabase } from '@/lib/supabase';
+import { router } from 'expo-router';
 
 const { width } = Dimensions.get('window');
 
@@ -31,7 +40,9 @@ export default function SignInScreen() {
   const [password, setPassword] = useState('');
   const [showPwd, setShowPwd] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
+  const [errors, setErrors] = useState<{ email?: string; password?: string }>(
+    {}
+  );
 
   const buttonScale = useSharedValue(1);
   const buttonAnimatedStyle = useAnimatedStyle(() => ({
@@ -48,7 +59,8 @@ export default function SignInScreen() {
   const validate = () => {
     const next: typeof errors = {};
     if (!emailValid) next.email = 'Enter a valid email address';
-    if (!passwordValid) next.password = 'Password must be at least 6 characters';
+    if (!passwordValid)
+      next.password = 'Password must be at least 6 characters';
     setErrors(next);
     return Object.keys(next).length === 0;
   };
@@ -59,17 +71,46 @@ export default function SignInScreen() {
     });
 
     if (!validate()) return;
+
     setSubmitting(true);
+    setErrors((prev) => ({ ...prev, password: undefined }));
+
     try {
-    } catch (e) {
-      setErrors((prev) => ({ ...prev, password: 'Invalid credentials. Try again.' }));
+      const {
+        data: { session },
+        error,
+      } = await supabase.auth.signInWithPassword({
+        email: email.trim().toLowerCase(),
+        password,
+      });
+
+      if (error) {
+        const msg = /confirm|verify/i.test(error.message)
+          ? 'Please verify your email address first.'
+          : 'Invalid credentials. Try again.';
+        setErrors((prev) => ({ ...prev, password: msg }));
+        return;
+      }
+
+      if (!session) {
+        setErrors((prev) => ({
+          ...prev,
+          password: 'Sign-in failed. Try again.',
+        }));
+        return;
+      }
+      router.replace('/(tabs)');
+    } catch (e: any) {
+      setErrors((prev) => ({
+        ...prev,
+        password: e?.message ?? 'Something went wrong signing in.',
+      }));
     } finally {
       setSubmitting(false);
     }
   };
 
-  const onForgotPassword = () => {
-  };
+  const onForgotPassword = () => {};
 
   const onSocial = async (provider: 'github' | 'google') => {
     setSubmitting(true);
@@ -81,17 +122,28 @@ export default function SignInScreen() {
 
   return (
     <View style={styles.container}>
-      <LinearGradient colors={['#000000', '#0a0a0a', '#000000']} style={styles.gradient}>
+      <LinearGradient
+        colors={['#000000', '#0a0a0a', '#000000']}
+        style={styles.gradient}
+      >
         <KeyboardAvoidingView
           style={styles.content}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         >
-          <Animated.View entering={FadeInUp.delay(300).springify()} style={styles.header}>
+          <Animated.View
+            entering={FadeInUp.delay(300).springify()}
+            style={styles.header}
+          >
             <Text style={styles.title}>DevPods</Text>
-            <Text style={styles.subtitle}>AI-native developer collaboration</Text>
+            <Text style={styles.subtitle}>
+              AI-native developer collaboration
+            </Text>
           </Animated.View>
 
-          <Animated.View entering={FadeInDown.delay(400).springify()} style={styles.formContainer}>
+          <Animated.View
+            entering={FadeInDown.delay(400).springify()}
+            style={styles.formContainer}
+          >
             <BlurView intensity={20} style={styles.formGlass}>
               <View style={styles.form}>
                 <View
@@ -100,7 +152,10 @@ export default function SignInScreen() {
                     errors.email && styles.inputError,
                   ]}
                 >
-                  <Mail color={errors.email ? '#ff6969' : '#666666'} size={20} />
+                  <Mail
+                    color={errors.email ? '#ff6969' : '#666666'}
+                    size={20}
+                  />
                   <TextInput
                     style={styles.input}
                     placeholder="Email"
@@ -108,19 +163,21 @@ export default function SignInScreen() {
                     value={email}
                     onChangeText={(t) => {
                       setEmail(t);
-                      if (errors.email) setErrors((e) => ({ ...e, email: undefined }));
+                      if (errors.email)
+                        setErrors((e) => ({ ...e, email: undefined }));
                     }}
                     keyboardType="email-address"
                     autoCapitalize="none"
                     autoComplete="email"
                     returnKeyType="next"
-                    onSubmitEditing={() => {
-                    }}
+                    onSubmitEditing={() => {}}
                     accessible
                     accessibilityLabel="Email"
                   />
                 </View>
-                {errors.email ? <Text style={styles.helperError}>{errors.email}</Text> : null}
+                {errors.email ? (
+                  <Text style={styles.helperError}>{errors.email}</Text>
+                ) : null}
 
                 <View
                   style={[
@@ -129,7 +186,10 @@ export default function SignInScreen() {
                     errors.password && styles.inputError,
                   ]}
                 >
-                  <Lock color={errors.password ? '#ff6969' : '#666666'} size={20} />
+                  <Lock
+                    color={errors.password ? '#ff6969' : '#666666'}
+                    size={20}
+                  />
                   <TextInput
                     style={styles.input}
                     placeholder="Password"
@@ -137,7 +197,8 @@ export default function SignInScreen() {
                     value={password}
                     onChangeText={(t) => {
                       setPassword(t);
-                      if (errors.password) setErrors((e) => ({ ...e, password: undefined }));
+                      if (errors.password)
+                        setErrors((e) => ({ ...e, password: undefined }));
                     }}
                     secureTextEntry={!showPwd}
                     autoCapitalize="none"
@@ -151,22 +212,34 @@ export default function SignInScreen() {
                     hitSlop={10}
                     style={styles.eyeBtn}
                     accessibilityRole="button"
-                    accessibilityLabel={showPwd ? 'Hide password' : 'Show password'}
+                    accessibilityLabel={
+                      showPwd ? 'Hide password' : 'Show password'
+                    }
                   >
-                    {showPwd ? <EyeOff size={18} color="#aaaaaa" /> : <Eye size={18} color="#aaaaaa" />}
+                    {showPwd ? (
+                      <EyeOff size={18} color="#aaaaaa" />
+                    ) : (
+                      <Eye size={18} color="#aaaaaa" />
+                    )}
                   </Pressable>
                 </View>
                 {errors.password ? (
                   <Text style={styles.helperError}>{errors.password}</Text>
                 ) : (
-                  <TouchableOpacity onPress={onForgotPassword} style={styles.forgotRow}>
+                  <TouchableOpacity
+                    onPress={onForgotPassword}
+                    style={styles.forgotRow}
+                  >
                     <Text style={styles.forgotText}>Forgot password?</Text>
                   </TouchableOpacity>
                 )}
 
                 <Animated.View style={[buttonAnimatedStyle, { marginTop: 4 }]}>
                   <TouchableOpacity
-                    style={[styles.signInButton, (!formValid || submitting) && styles.signInDisabled]}
+                    style={[
+                      styles.signInButton,
+                      (!formValid || submitting) && styles.signInDisabled,
+                    ]}
                     onPress={handleSignIn}
                     activeOpacity={0.85}
                     disabled={!formValid || submitting}
@@ -217,7 +290,8 @@ export default function SignInScreen() {
                 </Link>
 
                 <Text style={styles.legalText}>
-                  By continuing, you agree to our <Text style={styles.linkHighlight}>Terms</Text> &{' '}
+                  By continuing, you agree to our{' '}
+                  <Text style={styles.linkHighlight}>Terms</Text> &{' '}
                   <Text style={styles.linkHighlight}>Privacy Policy</Text>.
                 </Text>
               </View>
@@ -234,8 +308,18 @@ const styles = StyleSheet.create({
   gradient: { flex: 1 },
   content: { flex: 1, justifyContent: 'center', paddingHorizontal: 24 },
   header: { alignItems: 'center', marginBottom: 48 },
-  title: { fontSize: 32, fontFamily: 'Inter-SemiBold', color: '#ffffff', marginBottom: 8 },
-  subtitle: { fontSize: 16, fontFamily: 'Inter-Regular', color: '#999999', textAlign: 'center' },
+  title: {
+    fontSize: 32,
+    fontFamily: 'Inter-SemiBold',
+    color: '#ffffff',
+    marginBottom: 8,
+  },
+  subtitle: {
+    fontSize: 16,
+    fontFamily: 'Inter-Regular',
+    color: '#999999',
+    textAlign: 'center',
+  },
 
   formContainer: { width: '100%' },
   formGlass: {
@@ -269,7 +353,12 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,105,105,0.7)',
     backgroundColor: 'rgba(255,105,105,0.08)',
   },
-  helperError: { color: '#ff8f8f', fontSize: 12, marginBottom: 8, marginLeft: 6 },
+  helperError: {
+    color: '#ff8f8f',
+    fontSize: 12,
+    marginBottom: 8,
+    marginLeft: 6,
+  },
 
   eyeBtn: { paddingHorizontal: 4, paddingVertical: 4 },
 
@@ -291,7 +380,12 @@ const styles = StyleSheet.create({
   forgotRow: { alignSelf: 'flex-end', marginBottom: 6 },
   forgotText: { color: '#cfcfcf', fontSize: 12 },
 
-  dividerRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginVertical: 12 },
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginVertical: 12,
+  },
   divider: { flex: 1, height: 1, backgroundColor: 'rgba(255,255,255,0.1)' },
   dividerText: { color: '#8f8f8f', fontSize: 12 },
 
@@ -314,5 +408,10 @@ const styles = StyleSheet.create({
   linkText: { fontSize: 14, fontFamily: 'Inter-Regular', color: '#999999' },
   linkHighlight: { color: '#ffffff', fontFamily: 'Inter-Medium' },
 
-  legalText: { color: '#6f6f6f', fontSize: 12, textAlign: 'center', marginTop: 6 },
+  legalText: {
+    color: '#6f6f6f',
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 6,
+  },
 });
