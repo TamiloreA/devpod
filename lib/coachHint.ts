@@ -1,83 +1,107 @@
 import { supabase } from '@/lib/supabase';
 
-type LastCheckinRow = {
-  id: string;
-  standup_id: string;
-  notes_yesterday: string[] | null;
-  notes_today: string[] | null;
-  created_at: string;
-  standups?: { pod_id: string } | null;
-};
+const norm = (s: string) => (s || '').toLowerCase();
+const sentenceCase = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+const summarizeList = (list?: string[] | null, max = 3) =>
+  (list ?? []).filter(Boolean).slice(0, max).join(', ');
 
-export async function getCoachHint(): Promise<string> {
-  const { data: userRes } = await supabase.auth.getUser();
-  const userId = userRes.user?.id;
+export async function generateCoachHintForUser(userId: string): Promise<string> {
   if (!userId) return '';
-
-  const today = new Date().toISOString().slice(0, 10); 
-  const { data: cached } = await supabase
-    .from('coach_suggestions')
-    .select('suggestion, created_at')
-    .eq('user_id', userId)
-    .gte('created_at', `${today}T00:00:00Z`)
-    .lte('created_at', `${today}T23:59:59Z`)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (cached?.suggestion) {
-    return cached.suggestion;
-  }
 
   const { data: last, error: lastErr } = await supabase
     .from('standup_checkins')
-    .select(
-      'id, standup_id, notes_yesterday, notes_today, created_at, standups:standups!inner(pod_id)'
-    )
+    .select('id, created_at, standup_id, notes_yesterday, notes_today, blockers, tags')
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
     .limit(1)
-    .maybeSingle<LastCheckinRow>();
-
-  if (lastErr) {
-    console.warn('[coachHint] last check-in query:', lastErr.message);
-  }
-  if (!last) {
-    return 'No recent check-ins found.';
-  }
-
-  let podId = last.standups?.pod_id as string | undefined;
-  if (!podId && last.standup_id) {
-    const { data: standup } = await supabase
-      .from('standups')
-      .select('pod_id')
-      .eq('id', last.standup_id)
-      .maybeSingle();
-    podId = standup?.pod_id;
-  }
-  if (!podId) {
-    return 'No upcoming standups found.';
-  }
-
-  await supabase
-    .from('standups')
-    .select('id, scheduled_at')
-    .eq('pod_id', podId)
-    .gt('scheduled_at', new Date().toISOString())
-    .order('scheduled_at', { ascending: true })
-    .limit(1)
     .maybeSingle();
 
-  const y = (last.notes_yesterday ?? []).join(', ');
-  const hint = y
-    ? `Yesterday you wrapped ${y}. Suggestion: ship a smoke test before integrating push.`
-    : 'No notes from yesterday. Add one concrete win and 1–2 crisp tasks for today.';
+  if (lastErr) console.error('coachHint.lastErr', lastErr);
+  if (!last) return '';
 
-  await supabase.from('coach_suggestions').upsert({
-    user_id: userId,
-    suggestion: hint,
-    created_at: new Date().toISOString(), 
-  });
+  let podId: string | undefined;
+  let nextStartISO: string | undefined;
 
-  return hint;
+  if (last.standup_id) {
+    const { data: standup } = await supabase
+      .from('standups')
+      .select('id, pod_id, scheduled_at')
+      .eq('id', last.standup_id)
+      .maybeSingle();
+
+    podId = standup?.pod_id;
+
+    // 3) Next standup in that pod for framing (optional)
+    if (podId) {
+      const { data: next } = await supabase
+        .from('standups')
+        .select('scheduled_at')
+        .eq('pod_id', podId)
+        .gte('scheduled_at', new Date().toISOString())
+        .order('scheduled_at', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+
+      nextStartISO = next?.scheduled_at ?? undefined;
+    }
+  }
+
+  const y = (last.notes_yesterday ?? []) as string[];
+  const t = (last.notes_today ?? []) as string[];
+  const b = (last.blockers ?? []) as string[];
+  const tags = (last.tags ?? []) as string[];
+
+  const yText = summarizeList(y);
+  const tText = summarizeList(t);
+  const bText = summarizeList(b);
+  const tagText = summarizeList(tags?.map((x) => x.replace(/^#*/, '')));
+
+  const lowerAll = [y.join(' '), t.join(' '), b.join(' ')].map(norm).join(' ');
+  const hasTestyWords = /(test|qa|verify|smoke|e2e|coverage)/.test(lowerAll);
+  const hasPR = /(pr|pull request|review)/.test(lowerAll);
+  const hasDeploy = /(deploy|release|ship|publish|prod|production)/.test(lowerAll);
+  const hasDesign = /(design|spec|plan|doc)/.test(lowerAll);
+  const hasBlockers = b.length > 0;
+
+  const framing = nextStartISO
+    ? `Before your next standup (${new Date(nextStartISO).toLocaleTimeString(undefined, {
+        hour: 'numeric',
+        minute: '2-digit',
+      })}), `
+    : '';
+
+  let tip: string;
+  if (hasBlockers) {
+    tip = `${framing}surface blockers early so teammates can jump in. Try converting “${bText}” into actionable asks (owner + ETA).`;
+  } else if (hasDeploy) {
+    tip = `${framing}wrap “${tText || yText}” with a minimal smoke test and a rollback note. It cuts recovery time if prod misbehaves.`;
+  } else if (hasPR) {
+    tip = `${framing}add crisp acceptance criteria to “${tText || yText}” and leave a short PR checklist (tests, screenshots, perf).`;
+  } else if (hasDesign) {
+    tip = `${framing}turn the plan for “${tText || yText}” into a shareable doc with risks & “done means…” bullets—review goes faster.`;
+  } else if (hasTestyWords) {
+    tip = `${framing}run a quick “happy path + one failure” check on “${tText || yText}”. Small tests prevent big detours.`;
+  } else if (t.length) {
+    tip = `${framing}make “${tText}” concrete: add an owner, a deadline, and success criteria. Future you will thank you.`;
+  } else {
+    tip = `${framing}write a tiny “today” bullet with a concrete outcome. Even 15 minutes of progress compounds.`;
+  }
+
+  const preface = [
+    yText && `Yesterday: ${sentenceCase(yText)}.`,
+    tText && `Today: ${sentenceCase(tText)}.`,
+    tagText && `Tags: #${tagText.replace(/\s*,\s*/g, ' #')}.`,
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  return [preface, `Suggestion: ${tip}`].filter(Boolean).join(' ');
+}
+
+export async function upsertCoachSuggestion(userId: string, suggestion: string) {
+  if (!suggestion.trim()) return;
+  const { error } = await supabase
+    .from('coach_suggestions')
+    .upsert([{ user_id: userId, suggestion }], { onConflict: 'user_id' });
+  if (error) console.error('coachHint.upsert error', error);
 }

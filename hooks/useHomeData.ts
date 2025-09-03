@@ -1,15 +1,26 @@
-import { useEffect, useState } from 'react';
-import { fetchHome, type HomeData } from '@/lib/api/home';
+// hooks/useHomeData.ts
+import * as React from 'react';
+import { fetchHome, HomeData } from '@/lib/api/home';
 
 export function useHomeData() {
-  const [data, setData] = useState<HomeData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [data, setData] = React.useState<HomeData | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<unknown>(null);
 
-  useEffect(() => {
-    let alive = true;
-    fetchHome().then((d) => { if (alive) { setData(d); setLoading(false); }});
-    return () => { alive = false; };
+  const load = React.useCallback(async () => {
+    try {
+      setLoading(true);
+      const d = await fetchHome();
+      setData(d);
+    } catch (e) {
+      setError(e);
+      console.error('useHomeData', e);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  return { data, loading };
+  React.useEffect(() => { load(); }, [load]);
+
+  return { data, loading, error, reload: load };
 }

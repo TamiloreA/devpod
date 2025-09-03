@@ -1,41 +1,20 @@
 import React from 'react';
 import {
-  View,
-  Text,
-  ScrollView,
-  StyleSheet,
-  Dimensions,
-  Platform,
-  Pressable,
+  View, Text, ScrollView, StyleSheet, Dimensions, Platform, Pressable,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import Animated, {
-  FadeInDown,
-  FadeInRight,
-  useSharedValue,
-  useAnimatedStyle,
-  withSpring,
-  withRepeat,
-  withSequence,
+  FadeInDown, FadeInRight, useSharedValue, useAnimatedStyle, withSpring, withRepeat, withSequence,
 } from 'react-native-reanimated';
-import {
-  Users,
-  Clock,
-  Zap,
-  TrendingUp,
-  Calendar,
-  ArrowRight,
-  Mic,
-  TriangleAlert as AlertTriangle,
-} from 'lucide-react-native';
+import { Users, Clock, Zap, TrendingUp, Calendar, ArrowRight, Mic, TriangleAlert as AlertTriangle } from 'lucide-react-native';
 import GlassCard from '@/components/ui/GlassCard';
 import StatPill from '@/components/ui/StatPill';
 import Chip from '@/components/ui/Chip';
 import AvatarStack from '@/components/ui/AvatarStack';
-import EmptyState from '@/components/ui/EmptyState';
 import { Ionicons } from '@expo/vector-icons';
 import { useHomeData } from '@/hooks/useHomeData';
+import { router } from 'expo-router'; // ⬅︎ NEW
 
 const { width } = Dimensions.get('window');
 
@@ -52,41 +31,41 @@ export default function HomeScreen() {
     );
   }, []);
 
-  const pulseStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: pulseValue.value }],
-  }));
-
-  const handleQuickJoin = () => {
-    setLoadingJoin(true);
-    setTimeout(() => setLoadingJoin(false), 800);
-  };
+  const pulseStyle = useAnimatedStyle(() => ({ transform: [{ scale: pulseValue.value }] }));
 
   const user = data?.user ?? { name: '—', streak: 0 };
-  const todayStandup = data?.todayStandup ?? { time: '—', pod: '—', members: [] as string[] };
+  const todayStandup = data?.todayStandup ?? null; // ⬅︎ nullable so we know when to disable
   const coachHint = data?.coachHint ?? '';
   const podSnapshot = data?.podSnapshot ?? { name: '—', tz: '—', tags: [] as string[], members: [] as string[] };
   const shipLogPreview = data?.shipLogPreview ?? [];
   const recentActivities = data?.recentActivities ?? [];
   const counts = data?.counts ?? { podMembers: 0, standups: 0, openBlockers: 0 };
 
-  const a11yKillProps = {
-    accessible: false as const,
-    accessibilityElementsHidden: true as const,
-  };
+  const hasCoach = !!(coachHint && coachHint.trim());
+  const hasStandup = !!todayStandup;
+
+  const a11yKillProps = { accessible: false as const, accessibilityElementsHidden: true as const };
   const longPressKill = {
     onLongPress: (e: any) => e?.preventDefault?.(),
     delayLongPress: Platform.OS === 'ios' ? 100000 : 500,
     hitSlop: { top: 8, left: 8, right: 8, bottom: 8 } as const,
   };
 
+  const handleQuickJoin = () => {
+    if (!hasStandup) return;
+    setLoadingJoin(true);
+    // ⬇︎ Navigate to live room; pass both podId and standupId (your screen can use either/both)
+    router.push({
+      pathname: '/standup/[podId]',
+      params: { podId: todayStandup!.podId, standupId: todayStandup!.standupId },
+    });
+    setTimeout(() => setLoadingJoin(false), 600);
+  };
+
   return (
     <View style={styles.container}>
       <LinearGradient colors={['#000000', '#0a0a0a', '#000000']} style={styles.gradient}>
-        <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-        >
+        <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           {/* Header */}
           <Animated.View entering={FadeInDown.delay(200).springify()} style={styles.header}>
             <Text style={styles.greeting}>Good morning</Text>
@@ -101,14 +80,18 @@ export default function HomeScreen() {
           <Animated.View entering={FadeInDown.delay(240).springify()} style={styles.cardContainer}>
             <GlassCard
               title="Coach"
-              subtitle="AI prep for your next standup"
+              subtitle={hasCoach ? 'Prep for your next standup' : 'No recent check-ins yet'}
               right={<Ionicons name="sparkles-outline" size={18} color="#cfe3ff" />}
             >
-              <Text style={styles.coachText}>{coachHint}</Text>
-              <View style={styles.chipsRow}>
-                <Chip text="Make Today concrete" tone="info" />
-                <Chip text="Add acceptance criteria" />
-              </View>
+              <Text style={styles.coachText}>
+                {hasCoach ? coachHint : 'Log a check-in to get a tailored tip here.'}
+              </Text>
+              {hasCoach && (
+                <View style={styles.chipsRow}>
+                  <Chip text="Make Today concrete" tone="info" />
+                  <Chip text="Add acceptance criteria" />
+                </View>
+              )}
             </GlassCard>
           </Animated.View>
 
@@ -116,23 +99,27 @@ export default function HomeScreen() {
           <Animated.View entering={FadeInDown.delay(280).springify()} style={styles.quickRow}>
             <GlassCard
               title="Quick Join"
-              subtitle={`${todayStandup.pod}`}
+              subtitle={todayStandup?.pod ?? 'No upcoming standup'}
               right={<Ionicons name="mic-outline" size={16} color="#fff" />}
               style={styles.quickCard}
             >
-              <Text style={styles.quickMeta}>{todayStandup.time} • 2m each</Text>
+              <Text style={styles.quickMeta}>{hasStandup ? `${todayStandup!.time} • 2m each` : '—'}</Text>
               <View style={styles.cardFooter}>
                 <View {...a11yKillProps}>
                   <Pressable
                     {...a11yKillProps}
                     {...longPressKill}
                     onPress={handleQuickJoin}
-                    style={({ pressed }) => [styles.footerBtnPrimary, pressed && { opacity: 0.95 }]}
-                    disabled={loadingJoin}
+                    style={({ pressed }) => [
+                      styles.footerBtnPrimary,
+                      pressed && hasStandup && { opacity: 0.95 },
+                      !hasStandup && { opacity: 0.6 },
+                    ]}
+                    disabled={loadingJoin || !hasStandup}
                   >
                     <Mic color="#000000" size={16} />
                     <Text selectable={false} style={styles.footerBtnPrimaryText}>
-                      {loadingJoin ? 'Joining…' : 'Join'}
+                      {loadingJoin ? 'Joining…' : hasStandup ? 'Join' : 'Unavailable'}
                     </Text>
                   </Pressable>
                 </View>
@@ -154,35 +141,27 @@ export default function HomeScreen() {
                     onPress={() => {}}
                     style={({ pressed }) => [styles.footerBtnSecondary, pressed && { opacity: 0.95 }]}
                   >
-                    <Text selectable={false} style={styles.footerBtnSecondaryText}>
-                      Raise
-                    </Text>
+                    <Text selectable={false} style={styles.footerBtnSecondaryText}>Raise</Text>
                   </Pressable>
                 </View>
               </View>
             </GlassCard>
           </Animated.View>
 
-          {/* Your Pod (now fully dynamic) */}
+          {/* Your Pod */}
           <Animated.View entering={FadeInDown.delay(320).springify()} style={styles.cardContainer}>
             <GlassCard title="Your Pod" subtitle={`${podSnapshot.name} • ${podSnapshot.tz}`}>
               <View style={styles.podTopRow}>
                 <View style={styles.podAvatars}>
                   <AvatarStack urls={podSnapshot.members} />
                 </View>
-
                 <View style={styles.podStatsRow}>
                   <StatPill icon="flame" value={user.streak} label="day streak" />
                   <StatPill icon="people" value={counts.podMembers} label="members" />
                 </View>
               </View>
-
               <View style={styles.chipsRow}>
-                {podSnapshot.tags.length ? (
-                  podSnapshot.tags.map((t) => <Chip key={t} text={t} />)
-                ) : (
-                  <Chip text="#getting-started" />
-                )}
+                {podSnapshot.tags.length ? podSnapshot.tags.map((t) => <Chip key={t} text={t} />) : <Chip text="#getting-started" />}
               </View>
             </GlassCard>
           </Animated.View>
@@ -196,42 +175,48 @@ export default function HomeScreen() {
                     <Clock color="#ffffff" size={20} />
                     <Text style={styles.cardTitle}>Next Standup</Text>
                   </View>
-                  <Animated.View style={pulseStyle}>
-                    <View style={styles.liveIndicator} />
-                  </Animated.View>
+                  <Animated.View style={pulseStyle}><View style={styles.liveIndicator} /></Animated.View>
                 </View>
 
-                <Text style={styles.podName}>{todayStandup.pod}</Text>
-                <Text style={styles.standupTime}>{todayStandup.time} • 15 min</Text>
+                <Text style={styles.podName}>{hasStandup ? todayStandup!.pod : 'No upcoming standups'}</Text>
+                <Text style={styles.standupTime}>
+                  {hasStandup ? `${todayStandup!.time} • 15 min` : 'Create or join a pod to get started'}
+                </Text>
 
-                <View style={styles.membersRow}>
-                  {todayStandup.members.slice(0, 3).map((member, index) => (
-                    <Animated.View
-                      key={`${member}-${index}`}
-                      entering={FadeInRight.delay(400 + index * 100).springify()}
-                      style={[styles.memberAvatar, { zIndex: 3 - index, marginLeft: index * -8 }]}
-                    >
-                      <Text style={styles.memberInitial}>{member[0] ?? '?'}</Text>
-                    </Animated.View>
-                  ))}
-                  {todayStandup.members.length > 3 && (
-                    <View style={styles.memberCount}>
-                      <Text style={styles.memberCountText}>+{todayStandup.members.length - 3}</Text>
-                    </View>
-                  )}
-                </View>
+                {hasStandup && (
+                  <View style={styles.membersRow}>
+                    {(todayStandup?.members ?? []).slice(0, 3).map((member, index) => (
+                      <Animated.View
+                        key={`${member}-${index}`}
+                        entering={FadeInRight.delay(400 + index * 100).springify()}
+                        style={[styles.memberAvatar, { zIndex: 3 - index, marginLeft: index * -8 }]}
+                      >
+                        <Text style={styles.memberInitial}>{member?.[0] ?? '?'}</Text>
+                      </Animated.View>
+                    ))}
+                    {(todayStandup?.members?.length ?? 0) > 3 && (
+                      <View style={styles.memberCount}>
+                        <Text style={styles.memberCountText}>+{(todayStandup?.members?.length ?? 0) - 3}</Text>
+                      </View>
+                    )}
+                  </View>
+                )}
 
                 <View {...a11yKillProps}>
                   <Pressable
                     {...a11yKillProps}
                     {...longPressKill}
                     onPress={handleQuickJoin}
-                    style={({ pressed }) => [styles.joinButton, pressed && { opacity: 0.96 }]}
-                    disabled={loadingJoin}
+                    style={({ pressed }) => [
+                      styles.joinButton,
+                      pressed && hasStandup && { opacity: 0.96 },
+                      !hasStandup && { opacity: 0.6 },
+                    ]}
+                    disabled={loadingJoin || !hasStandup}
                   >
                     <Mic color="#000000" size={18} />
                     <Text selectable={false} style={styles.joinButtonText}>
-                      {loadingJoin ? 'Joining…' : 'Quick Join'}
+                      {loadingJoin ? 'Joining…' : hasStandup ? 'Quick Join' : 'Unavailable'}
                     </Text>
                     <ArrowRight color="#000000" size={18} />
                   </Pressable>

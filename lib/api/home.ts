@@ -2,31 +2,18 @@ import { supabase } from '@/lib/supabase';
 
 export type HomeData = {
   user: { name: string; streak: number };
-  todayStandup: { time: string; pod: string; members: string[] } | null;
+  todayStandup: { standupId: string; podId: string; time: string; pod: string; members: string[] } | null;
   coachHint: string;
   podSnapshot: { name: string; tz: string; tags: string[]; members: string[] };
   shipLogPreview: {
-    who: string;
-    y: string[];
-    t: string[];
-    b: string[];
-    tags: string[];
-    ago: string;
+    who: string; y: string[]; t: string[]; b: string[]; tags: string[]; ago: string;
   }[];
-  recentActivities: {
-    type: 'standup' | 'blocker';
-    pod: string;
-    title?: string;
-    time: string;
-  }[];
+  recentActivities: { type: 'standup' | 'blocker'; pod: string; title?: string; time: string }[];
   counts: { podMembers: number; standups: number; openBlockers: number };
 };
 
 const fmtTime = (d: string) =>
-  new Date(d).toLocaleTimeString(undefined, {
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+  new Date(d).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 
 const timeAgo = (input: string | Date): string => {
   const date = typeof input === 'string' ? new Date(input) : input;
@@ -86,9 +73,7 @@ export async function fetchHome(): Promise<HomeData> {
     .eq('id', userId)
     .maybeSingle();
 
-  const metaName = (user.user_metadata as any)?.display_name as
-    | string
-    | undefined;
+  const metaName = (user.user_metadata as any)?.display_name as string | undefined;
   const emailName = user.email?.split('@')[0];
   const displayName =
     (profile?.display_name ?? '').trim() ||
@@ -106,10 +91,7 @@ export async function fetchHome(): Promise<HomeData> {
 
   const podId: string | undefined = primaryMember?.pod_id;
   const podName = (primaryMember as any)?.pods?.name ?? 'Your Pod';
-  const tz =
-    (primaryMember as any)?.pods?.timezone ??
-    profile?.timezone ??
-    'Africa/Lagos';
+  const tz = (primaryMember as any)?.pods?.timezone ?? (profile?.timezone ?? 'Africa/Lagos');
 
   const { data: members } = podId
     ? await supabase
@@ -120,20 +102,14 @@ export async function fetchHome(): Promise<HomeData> {
 
   const memberAvatarUrls: string[] = (members ?? []).map((m, i) => {
     const name = m.profiles?.display_name ?? 'Dev';
-    const fallback = `https://api.dicebear.com/7.x/initials/png?seed=${encodeURIComponent(
-      name
-    )}`;
-    return (
-      m.profiles?.avatar_url ||
-      fallback ||
-      `https://i.pravatar.cc/100?img=${(i % 70) + 1}`
-    );
+    const fallback = `https://api.dicebear.com/7.x/initials/png?seed=${encodeURIComponent(name)}`;
+    return m.profiles?.avatar_url || fallback || `https://i.pravatar.cc/100?img=${(i % 70) + 1}`;
   });
 
   const { data: nextStandup } = podId
     ? await supabase
         .from('standups')
-        .select('id, scheduled_at, duration_minutes, status')
+        .select('id, pod_id, scheduled_at, duration_minutes, status')
         .eq('pod_id', podId)
         .gte('scheduled_at', new Date().toISOString())
         .order('scheduled_at', { ascending: true })
@@ -163,17 +139,11 @@ export async function fetchHome(): Promise<HomeData> {
     : { data: [] as any[] };
 
   const { count: memberCount } = podId
-    ? await supabase
-        .from('pod_members')
-        .select('*', { count: 'exact', head: true })
-        .eq('pod_id', podId)
+    ? await supabase.from('pod_members').select('*', { count: 'exact', head: true }).eq('pod_id', podId)
     : { count: 0 };
 
   const { count: standupCount } = podId
-    ? await supabase
-        .from('standups')
-        .select('*', { count: 'exact', head: true })
-        .eq('pod_id', podId)
+    ? await supabase.from('standups').select('*', { count: 'exact', head: true }).eq('pod_id', podId)
     : { count: 0 };
 
   const { count: openBlockers } = podId
@@ -211,13 +181,14 @@ export async function fetchHome(): Promise<HomeData> {
         .limit(50)
     : { data: [] as any[] };
 
-  const dynamicTags = topTags(
-    [
-      ...(recentCheckins ?? []).map((r: any) => r.tags as string[] | null),
-      ...(recentBlockers ?? []).map((b: any) => b.tags as string[] | null),
-    ],
-    3
-  ) || ['#react-native', '#node', '#perf'];
+  const dynamicTags =
+    topTags(
+      [
+        ...(recentCheckins ?? []).map((r: any) => r.tags as string[] | null),
+        ...(recentBlockers ?? []).map((b: any) => b.tags as string[] | null),
+      ],
+      3
+    ) || ['#react-native', '#node', '#perf'];
 
   const shipLogPreview =
     (checkins ?? []).slice(0, 2).map((ci: any) => ({
@@ -230,23 +201,18 @@ export async function fetchHome(): Promise<HomeData> {
     })) ?? [];
 
   return {
-    user: { name: displayName, streak: profile?.streak_current ?? 0 }, // ← now correct
+    user: { name: displayName, streak: profile?.streak_current ?? 0 },
     todayStandup: nextStandup
       ? {
+          standupId: String(nextStandup.id),
+          podId: String(nextStandup.pod_id ?? podId ?? ''),
           time: fmtTime(nextStandup.scheduled_at),
           pod: podName,
-          members: (members ?? []).map(
-            (m: any) => m.profiles?.display_name || 'Dev'
-          ),
+          members: (members ?? []).map((m: any) => m.profiles?.display_name || 'Dev'),
         }
       : null,
     coachHint: 'No recent check-ins found.',
-    podSnapshot: {
-      name: podName,
-      tz,
-      tags: dynamicTags,
-      members: memberAvatarUrls,
-    },
+    podSnapshot: { name: podName, tz, tags: dynamicTags, members: memberAvatarUrls },
     shipLogPreview,
     recentActivities: (activity ?? []).map((a: any) => ({
       type: a.type,
@@ -254,10 +220,6 @@ export async function fetchHome(): Promise<HomeData> {
       title: a.title ?? undefined,
       time: timeAgo(a.occurred_at),
     })),
-    counts: {
-      podMembers: memberCount ?? 0,
-      standups: standupCount ?? 0,
-      openBlockers: openBlockers ?? 0,
-    },
+    counts: { podMembers: memberCount ?? 0, standups: standupCount ?? 0, openBlockers: openBlockers ?? 0 },
   };
 }
