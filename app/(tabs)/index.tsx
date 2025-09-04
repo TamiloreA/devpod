@@ -14,14 +14,27 @@ import Chip from '@/components/ui/Chip';
 import AvatarStack from '@/components/ui/AvatarStack';
 import { Ionicons } from '@expo/vector-icons';
 import { useHomeData } from '@/hooks/useHomeData';
-import { router } from 'expo-router'; // ⬅︎ NEW
+import { router } from 'expo-router';
 
 const { width } = Dimensions.get('window');
 
+const statusColor = (s: 'invited'|'going'|'maybe'|'declined'|'checked_in') => {
+  switch (s) {
+    case 'going':
+    case 'checked_in': return '#00ff88';
+    case 'maybe': return '#ffaa00';
+    case 'declined': return '#ff6b6b';
+    default: return 'rgba(255,255,255,0.35)';
+  }
+};
+
 export default function HomeScreen() {
-  const { data, loading } = useHomeData();
+  const { data } = useHomeData();
   const pulseValue = useSharedValue(1);
   const [loadingJoin, setLoadingJoin] = React.useState(false);
+
+  // NEW: POD-vs-LOCAL toggle (defaults to POD)
+  const [showLocal, setShowLocal] = React.useState(false);
 
   React.useEffect(() => {
     pulseValue.value = withRepeat(
@@ -34,7 +47,7 @@ export default function HomeScreen() {
   const pulseStyle = useAnimatedStyle(() => ({ transform: [{ scale: pulseValue.value }] }));
 
   const user = data?.user ?? { name: '—', streak: 0 };
-  const todayStandup = data?.todayStandup ?? null; // ⬅︎ nullable so we know when to disable
+  const todayStandup = data?.todayStandup ?? null;
   const coachHint = data?.coachHint ?? '';
   const podSnapshot = data?.podSnapshot ?? { name: '—', tz: '—', tags: [] as string[], members: [] as string[] };
   const shipLogPreview = data?.shipLogPreview ?? [];
@@ -54,13 +67,26 @@ export default function HomeScreen() {
   const handleQuickJoin = () => {
     if (!hasStandup) return;
     setLoadingJoin(true);
-    // ⬇︎ Navigate to live room; pass both podId and standupId (your screen can use either/both)
     router.push({
       pathname: '/standup/[podId]',
       params: { podId: todayStandup!.podId, standupId: todayStandup!.standupId },
     });
     setTimeout(() => setLoadingJoin(false), 600);
   };
+
+  const participants = todayStandup?.participants ?? [];
+  const goingCount = participants.filter(p => p.status === 'going' || p.status === 'checked_in').length;
+  const maybeCount = participants.filter(p => p.status === 'maybe').length;
+  const invitedCount = participants.filter(p => p.status === 'invited').length;
+  const declinedCount = participants.filter(p => p.status === 'declined').length;
+
+  // NEW: time strings driven by toggle
+  const primaryTime = hasStandup
+    ? (showLocal ? todayStandup!.timeLocal : todayStandup!.timePod)
+    : '—';
+  const primaryTz = hasStandup
+    ? (showLocal ? todayStandup!.localTzAbbr : todayStandup!.podTzAbbr)
+    : '';
 
   return (
     <View style={styles.container}>
@@ -103,7 +129,9 @@ export default function HomeScreen() {
               right={<Ionicons name="mic-outline" size={16} color="#fff" />}
               style={styles.quickCard}
             >
-              <Text style={styles.quickMeta}>{hasStandup ? `${todayStandup!.time} • 2m each` : '—'}</Text>
+              <Text style={styles.quickMeta}>
+                {hasStandup ? `${primaryTime} • 2m each • ${primaryTz}` : '—'}
+              </Text>
               <View style={styles.cardFooter}>
                 <View {...a11yKillProps}>
                   <Pressable
@@ -138,7 +166,7 @@ export default function HomeScreen() {
                   <Pressable
                     {...a11yKillProps}
                     {...longPressKill}
-                    onPress={() => {}}
+                    onPress={() => router.push('/blockers?raise=1')}
                     style={({ pressed }) => [styles.footerBtnSecondary, pressed && { opacity: 0.95 }]}
                   >
                     <Text selectable={false} style={styles.footerBtnSecondaryText}>Raise</Text>
@@ -179,27 +207,56 @@ export default function HomeScreen() {
                 </View>
 
                 <Text style={styles.podName}>{hasStandup ? todayStandup!.pod : 'No upcoming standups'}</Text>
-                <Text style={styles.standupTime}>
-                  {hasStandup ? `${todayStandup!.time} • 15 min` : 'Create or join a pod to get started'}
-                </Text>
 
+                {/* NEW: TZ toggle + selected time */}
                 {hasStandup && (
-                  <View style={styles.membersRow}>
-                    {(todayStandup?.members ?? []).slice(0, 3).map((member, index) => (
-                      <Animated.View
-                        key={`${member}-${index}`}
-                        entering={FadeInRight.delay(400 + index * 100).springify()}
-                        style={[styles.memberAvatar, { zIndex: 3 - index, marginLeft: index * -8 }]}
-                      >
-                        <Text style={styles.memberInitial}>{member?.[0] ?? '?'}</Text>
-                      </Animated.View>
-                    ))}
-                    {(todayStandup?.members?.length ?? 0) > 3 && (
-                      <View style={styles.memberCount}>
-                        <Text style={styles.memberCountText}>+{(todayStandup?.members?.length ?? 0) - 3}</Text>
-                      </View>
-                    )}
+                  <View style={{ marginBottom: 14 }}>
+                    <View style={styles.tzToggleRow}>
+                      <Pressable onPress={() => setShowLocal(false)} style={[styles.tzChip, !showLocal && styles.tzChipActive]}>
+                        <Text style={[styles.tzChipText, !showLocal && styles.tzChipTextActive]}>POD</Text>
+                      </Pressable>
+                      <Pressable onPress={() => setShowLocal(true)} style={[styles.tzChip, showLocal && styles.tzChipActive]}>
+                        <Text style={[styles.tzChipText, showLocal && styles.tzChipTextActive]}>LOCAL</Text>
+                      </Pressable>
+                    </View>
+
+                    <Text style={styles.standupTime}>
+                      {primaryTime} • 15 min • {primaryTz}
+                    </Text>
                   </View>
+                )}
+
+                {/* Attendance */}
+                {hasStandup && participants.length > 0 && (
+                  <>
+                    <View style={styles.membersRow}>
+                      {participants.slice(0, 5).map((p, index) => (
+                        <Animated.View
+                          key={`${p.name}-${index}`}
+                          entering={FadeInRight.delay(400 + index * 100).springify()}
+                          style={{ zIndex: 5 - index, marginLeft: index * -8 }}
+                        >
+                          <View style={[styles.statusRing, { borderColor: statusColor(p.status) }]}>
+                            <View style={styles.memberAvatar}>
+                              <Text style={styles.memberInitial}>{p.name?.[0] ?? '?'}</Text>
+                            </View>
+                          </View>
+                        </Animated.View>
+                      ))}
+                      {participants.length > 5 && (
+                        <View style={styles.memberCount}>
+                          <Text style={styles.memberCountText}>+{participants.length - 5}</Text>
+                        </View>
+                      )}
+                    </View>
+
+                    <Text style={styles.attendanceMeta}>
+                      <Text style={{ color: statusColor('going') }}>{goingCount} going</Text>
+                      {maybeCount ? <Text>{'  •  '}<Text style={{ color: statusColor('maybe') }}>{maybeCount} maybe</Text></Text> : null}
+                      {invitedCount ? <Text>{'  •  '}{invitedCount} invited</Text> : null}
+                      {declinedCount ? <Text>{'  •  '}<Text style={{ color: statusColor('declined') }}>{declinedCount} declined</Text></Text> : null}
+                    </Text>
+                  </>
                 )}
 
                 <View {...a11yKillProps}>
@@ -225,7 +282,7 @@ export default function HomeScreen() {
             </BlurView>
           </Animated.View>
 
-          {/* Stats Cards — now dynamic */}
+          {/* Stats */}
           <Animated.View entering={FadeInDown.delay(420).springify()} style={styles.statsGrid}>
             <BlurView intensity={15} style={styles.statGlass}>
               <View style={styles.statCard}>
@@ -305,8 +362,6 @@ export default function HomeScreen() {
               </View>
             </BlurView>
           </Animated.View>
-
-          {/* <EmptyState title="No upcoming standups" subtitle="Create or join a pod to get started." /> */}
         </ScrollView>
       </LinearGradient>
     </View>
@@ -340,53 +395,47 @@ const styles = StyleSheet.create({
   liveIndicator: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#00ff88' },
 
   podName: { fontSize: 20, fontFamily: 'Inter-SemiBold', color: '#ffffff', marginBottom: 4 },
-  standupTime: { fontSize: 14, fontFamily: 'Inter-Regular', color: '#999999', marginBottom: 20 },
+  standupTime: { fontSize: 14, fontFamily: 'Inter-Regular', color: '#999999' },
 
-  membersRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 20 },
+  /* NEW: TZ toggle styles */
+  tzToggleRow: { flexDirection: 'row', gap: 8 as any, marginTop: 4, marginBottom: 6 },
+  tzChip: {
+    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.18)',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  tzChipActive: { backgroundColor: '#ffffff', borderColor: '#ffffff' },
+  tzChipText: { color: '#cfcfcf', fontSize: 11, fontFamily: 'Inter-Medium' },
+  tzChipTextActive: { color: '#000000' },
+
+  /* Attendance */
+  membersRow: { flexDirection: 'row', alignItems: 'center', marginTop: 12, marginBottom: 10 },
+  statusRing: { padding: 2, borderRadius: 18, borderWidth: 2, backgroundColor: 'transparent' },
   memberAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 32, height: 32, borderRadius: 16,
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#000000',
+    justifyContent: 'center', alignItems: 'center',
   },
   memberInitial: { fontSize: 12, fontFamily: 'Inter-SemiBold', color: '#ffffff' },
   memberCount: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 32, height: 32, borderRadius: 16,
     backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginLeft: -8,
+    justifyContent: 'center', alignItems: 'center', marginLeft: -8,
   },
   memberCountText: { fontSize: 10, fontFamily: 'Inter-Medium', color: '#999999' },
+  attendanceMeta: { color: '#a8a8a8', fontSize: 12, marginBottom: 20 },
 
   joinButton: {
-    minHeight: 48,
-    minWidth: 140,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#ffffff',
-    borderRadius: 16,
-    paddingVertical: 14,
-    paddingHorizontal: 20,
+    minHeight: 48, minWidth: 140,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: '#ffffff', borderRadius: 16, paddingVertical: 14, paddingHorizontal: 20,
   },
   joinButtonText: { fontSize: 16, fontFamily: 'Inter-SemiBold', color: '#000000', marginHorizontal: 8 },
 
   statsGrid: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 },
   statGlass: {
-    flex: 1,
-    marginHorizontal: 4,
-    borderRadius: 20,
-    overflow: 'hidden',
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    flex: 1, marginHorizontal: 4, borderRadius: 20, overflow: 'hidden',
+    backgroundColor: 'rgba(255, 255, 255, 0.03)', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.08)',
   },
   statCard: { padding: 20, alignItems: 'center' },
   statNumber: { fontSize: 24, fontFamily: 'Inter-SemiBold', color: '#ffffff', marginTop: 8 },
@@ -406,60 +455,32 @@ const styles = StyleSheet.create({
   quickMeta: { color: '#a8a8a8' },
 
   cardFooter: {
-    marginTop: 16,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
+    marginTop: 16, paddingTop: 12, borderTopWidth: 1, borderColor: 'rgba(255,255,255,0.06)',
+    flexDirection: 'row', justifyContent: 'flex-end',
   },
   footerBtnPrimary: {
-    minHeight: 44,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 12,
-    backgroundColor: '#ffffff',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8 as any,
+    minHeight: 44, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12,
+    backgroundColor: '#ffffff', flexDirection: 'row', alignItems: 'center', gap: 8 as any,
   },
   footerBtnPrimaryText: { color: '#000', fontWeight: '700' },
   footerBtnSecondary: {
-    minHeight: 44,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    alignItems: 'center',
-    justifyContent: 'center',
+    minHeight: 44, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
+    backgroundColor: 'rgba(255,255,255,0.06)', alignItems: 'center', justifyContent: 'center',
   },
   footerBtnSecondaryText: { color: '#fff', fontWeight: '700' },
 
   podTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 8 as any,
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 as any,
   },
   podAvatars: { flexShrink: 0 },
   podStatsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    gap: 8 as any,
-    flexShrink: 1,
-    maxWidth: '65%',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 8 as any, flexShrink: 1, maxWidth: '65%',
   },
 
   logRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    borderBottomWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-    paddingVertical: 10,
+    flexDirection: 'row', justifyContent: 'space-between', borderBottomWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)', paddingVertical: 10,
   },
   logWho: { color: '#fff', fontWeight: '700', marginBottom: 4 },
   logLine: { color: '#bdbdbd' },

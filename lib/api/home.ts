@@ -2,7 +2,26 @@ import { supabase } from '@/lib/supabase';
 
 export type HomeData = {
   user: { name: string; streak: number };
-  todayStandup: { standupId: string; podId: string; time: string; pod: string; members: string[] } | null;
+  todayStandup: {
+    standupId: string;
+    podId: string;
+    pod: string;
+
+    scheduledAtISO: string;
+
+    timePod: string;
+    podTz: string;
+    podTzAbbr: string;
+
+    timeLocal: string;
+    localTzAbbr: string;
+
+    participants?: {
+      name: string;
+      avatarUrl?: string | null;
+      status: 'invited' | 'going' | 'maybe' | 'declined' | 'checked_in';
+    }[];
+  } | null;
   coachHint: string;
   podSnapshot: { name: string; tz: string; tags: string[]; members: string[] };
   shipLogPreview: {
@@ -12,8 +31,29 @@ export type HomeData = {
   counts: { podMembers: number; standups: number; openBlockers: number };
 };
 
-const fmtTime = (d: string) =>
-  new Date(d).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+function fmtInTz(iso: string, timeZone: string, opts?: Intl.DateTimeFormatOptions): string {
+  try {
+    const o: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit', ...opts, timeZone };
+    return new Intl.DateTimeFormat(undefined, o).format(new Date(iso));
+  } catch {
+    return new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  }
+}
+
+function tzAbbr(iso: string, timeZone: string): string {
+  try {
+    const dtf = new Intl.DateTimeFormat(undefined, {
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZone,
+      timeZoneName: 'short',
+    });
+    const parts = dtf.formatToParts(new Date(iso));
+    return parts.find((p) => p.type === 'timeZoneName')?.value ?? timeZone;
+  } catch {
+    return timeZone;
+  }
+}
 
 const timeAgo = (input: string | Date): string => {
   const date = typeof input === 'string' ? new Date(input) : input;
@@ -91,7 +131,7 @@ export async function fetchHome(): Promise<HomeData> {
 
   const podId: string | undefined = primaryMember?.pod_id;
   const podName = (primaryMember as any)?.pods?.name ?? 'Your Pod';
-  const tz = (primaryMember as any)?.pods?.timezone ?? (profile?.timezone ?? 'Africa/Lagos');
+  const podTz = (primaryMember as any)?.pods?.timezone ?? (profile?.timezone ?? 'UTC');
 
   const { data: members } = podId
     ? await supabase
@@ -116,6 +156,31 @@ export async function fetchHome(): Promise<HomeData> {
         .limit(1)
         .maybeSingle()
     : { data: null };
+
+  let participants:
+    | { name: string; avatarUrl?: string | null; status: 'invited' | 'going' | 'maybe' | 'declined' | 'checked_in' }[]
+    | undefined;
+
+  if (nextStandup?.id) {
+    const { data: sp } = await supabase
+      .from('standup_participants')
+      .select('user_id, status, profiles:profiles!inner(display_name, avatar_url)')
+      .eq('standup_id', nextStandup.id);
+
+    participants = (sp ?? []).map((row: any) => ({
+      name: row.profiles?.display_name ?? 'Dev',
+      avatarUrl: row.profiles?.avatar_url ?? null,
+      status: row.status,
+    }));
+
+    if ((participants?.length ?? 0) === 0) {
+      participants = (members ?? []).map((m: any) => ({
+        name: m.profiles?.display_name || 'Dev',
+        avatarUrl: m.profiles?.avatar_url ?? null,
+        status: 'invited' as const,
+      }));
+    }
+  }
 
   const { data: lastDone } = podId
     ? await supabase
@@ -200,19 +265,32 @@ export async function fetchHome(): Promise<HomeData> {
       ago: timeAgo(ci.created_at),
     })) ?? [];
 
+  const scheduledAtISO = nextStandup?.scheduled_at ?? null;
+  const timeLocal = scheduledAtISO
+    ? new Date(scheduledAtISO).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+    : '';
+  const localTzAbbr = scheduledAtISO ? tzAbbr(scheduledAtISO, Intl.DateTimeFormat().resolvedOptions().timeZone) : '';
+  const timePod = scheduledAtISO ? fmtInTz(scheduledAtISO, podTz) : '';
+  const podTzAbbr = scheduledAtISO ? tzAbbr(scheduledAtISO, podTz) : '';
+
   return {
     user: { name: displayName, streak: profile?.streak_current ?? 0 },
     todayStandup: nextStandup
       ? {
           standupId: String(nextStandup.id),
           podId: String(nextStandup.pod_id ?? podId ?? ''),
-          time: fmtTime(nextStandup.scheduled_at),
           pod: podName,
-          members: (members ?? []).map((m: any) => m.profiles?.display_name || 'Dev'),
+          scheduledAtISO: scheduledAtISO!,
+          timePod,
+          podTz,
+          podTzAbbr,
+          timeLocal,
+          localTzAbbr,
+          participants,
         }
       : null,
     coachHint: 'No recent check-ins found.',
-    podSnapshot: { name: podName, tz, tags: dynamicTags, members: memberAvatarUrls },
+    podSnapshot: { name: podName, tz: podTz, tags: dynamicTags, members: memberAvatarUrls },
     shipLogPreview,
     recentActivities: (activity ?? []).map((a: any) => ({
       type: a.type,
