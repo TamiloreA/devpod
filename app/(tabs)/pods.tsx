@@ -1,7 +1,6 @@
-// app/(tabs)/pods.tsx
 import React, { useMemo, useState } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet, Dimensions, Pressable,
+  View, Text, ScrollView, TouchableOpacity, StyleSheet, Pressable,
   Modal, TextInput, ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -12,8 +11,6 @@ import Chip from '@/components/ui/Chip';
 import { usePodData } from '@/hooks/usePodData';
 import { router } from 'expo-router';
 
-const { width } = Dimensions.get('window');
-
 export default function PodsScreen() {
   const { data, loading, error, create, leave } = usePodData();
   const buttonScale = useSharedValue(1);
@@ -21,7 +18,7 @@ export default function PodsScreen() {
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState('');
   const [desc, setDesc] = useState('');
-  const [tz, setTz] = useState('Africa/Lagos');
+  const [tz, setTz] = useState('UTC');
   const [saving, setSaving] = useState(false);
 
   const buttonAnimatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: buttonScale.value }] }));
@@ -45,14 +42,13 @@ export default function PodsScreen() {
   };
 
   const currentPod = data ?? null;
-  const onlineCount =
-  currentPod?.members?.filter(m => !!m.online).length ?? 0;
+  const onlineCount = currentPod?.members?.filter(m => !!m.online).length ?? 0;
+
   const week = useMemo(
     () => [{ d: 'Mon', t: '—' }, { d: 'Tue', t: '—' }, { d: 'Wed', t: '—' }, { d: 'Thu', t: '—' }, { d: 'Fri', t: '—' }],
     []
   );
 
-  // ---------- Empty state
   if (!loading && !currentPod) {
     return (
       <View style={styles.container}>
@@ -73,7 +69,6 @@ export default function PodsScreen() {
           </ScrollView>
         </LinearGradient>
 
-        {/* Create Pod modal */}
         <Modal visible={showCreate} transparent animationType="fade" onRequestClose={() => setShowCreate(false)}>
           <View style={styles.modalBackdrop}>
             <View style={styles.modalCard}>
@@ -87,7 +82,7 @@ export default function PodsScreen() {
                 style={[styles.input, { height: 80 }]} value={desc} onChangeText={setDesc} multiline
               />
               <TextInput
-                placeholder="Timezone (IANA, e.g., Africa/Lagos)" placeholderTextColor="#888"
+                placeholder="Timezone (IANA, e.g., UTC or Africa/Lagos)" placeholderTextColor="#888"
                 style={styles.input} value={tz} onChangeText={setTz}
               />
               <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
@@ -120,7 +115,6 @@ export default function PodsScreen() {
     );
   }
 
-  // ---------- Loading
   if (loading || !currentPod) {
     return (
       <View style={[styles.container, { alignItems: 'center', justifyContent: 'center' }]}>
@@ -129,7 +123,6 @@ export default function PodsScreen() {
     );
   }
 
-  // ---------- Main view
   return (
     <View style={styles.container}>
       <LinearGradient colors={['#000000', '#0a0a0a', '#000000']} style={styles.gradient}>
@@ -192,6 +185,9 @@ export default function PodsScreen() {
                   <Text style={styles.nextStandupTime}>
                     {currentPod.nextStandupTime ? `${currentPod.nextStandupTime} ${currentPod.timezone}` : '—'}
                   </Text>
+                  <Text style={{ color: '#9aa0a6', marginTop: 6, fontSize: 12 }}>
+                    All times shown in {currentPod.timezone}
+                  </Text>
                 </View>
 
                 {/* Members */}
@@ -249,14 +245,13 @@ export default function PodsScreen() {
         </ScrollView>
       </LinearGradient>
 
-      {/* Create modal also available from the settings icon */}
       <Modal visible={showCreate} transparent animationType="fade" onRequestClose={() => setShowCreate(false)}>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Create Pod</Text>
             <TextInput placeholder="Name" placeholderTextColor="#888" style={styles.input} value={name} onChangeText={setName} />
             <TextInput placeholder="Description" placeholderTextColor="#888" style={[styles.input, { height: 80 }]} value={desc} onChangeText={setDesc} multiline />
-            <TextInput placeholder="Timezone (e.g., Africa/Lagos)" placeholderTextColor="#888" style={styles.input} value={tz} onChangeText={setTz} />
+            <TextInput placeholder="Timezone (e.g., UTC or Africa/Lagos)" placeholderTextColor="#888" style={styles.input} value={tz} onChangeText={setTz} />
             <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
               <Pressable style={[styles.actionSecondary, { flex: 1 }]} onPress={() => setShowCreate(false)}>
                 <Text style={styles.actionSecondaryText}>Cancel</Text>
@@ -373,7 +368,6 @@ const styles = StyleSheet.create({
   },
   standupButtonText: { fontSize: 16, fontFamily: 'Inter-SemiBold', color: '#000000', marginHorizontal: 8 },
 
-  // Modal
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 },
   modalCard: { backgroundColor: '#111', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' },
   modalTitle: { color: '#fff', fontFamily: 'Inter-SemiBold', fontSize: 18, marginBottom: 10 },
