@@ -1,13 +1,28 @@
 import { supabase } from '@/lib/supabase';
 
+export type WeekScheduleJSON =
+  | {
+      mon?: { time: string; duration?: number }[];
+      tue?: { time: string; duration?: number }[];
+      wed?: { time: string; duration?: number }[];
+      thu?: { time: string; duration?: number }[];
+      fri?: { time: string; duration?: number }[];
+      sat?: { time: string; duration?: number }[];
+      sun?: { time: string; duration?: number }[];
+    }
+  | null;
+
 export type HomeData = {
   user: { name: string; streak: number };
   todayStandup: {
-    standupId: string;
+    standupId: string;          
+    joinable: boolean;           
+    isFromWeekSchedule?: boolean;
+
     podId: string;
     pod: string;
 
-    scheduledAtISO: string;
+    scheduledAtISO: string;      
 
     timePod: string;
     podTz: string;
@@ -89,6 +104,69 @@ function topTags(arrays: (string[] | null | undefined)[], n = 3): string[] {
     .map(([t]) => `#${t}`);
 }
 
+const DOW_KEYS = ['sun','mon','tue','wed','thu','fri','sat'] as const; 
+type DKey = typeof DOW_KEYS[number];
+
+function ymdInTz(d: Date, tz: string) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit'
+  }).formatToParts(d);
+  const get = (t: string) => Number(parts.find(p => p.type === t)?.value);
+  return { y: get('year'), m: get('month'), d: get('day') };
+}
+function weekdayShortInTz(d: Date, tz: string) {
+  return new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' }).format(d); 
+}
+function shortToKey(s: string): keyof NonNullable<WeekScheduleJSON> {
+  return s.toLowerCase().slice(0,3) as any; 
+}
+function partsInTz(dateUTC: Date, tz: string) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false
+  }).formatToParts(dateUTC);
+  const get = (t: string) => Number(parts.find(p => p.type === t)?.value);
+  return { y: get('year'), m: get('month'), d: get('day'), h: get('hour'), min: get('minute') };
+}
+function makeUtcForTz(target: {y:number; m:number; d:number; h:number; min:number}, tz: string): Date {
+  let utc = Date.UTC(target.y, target.m - 1, target.d, target.h, target.min, 0);
+  for (let i = 0; i < 3; i++) {
+    const shown = partsInTz(new Date(utc), tz); 
+    const desired = Date.UTC(target.y, target.m - 1, target.d, target.h, target.min, 0);
+    const shownUTCFromLocal = Date.UTC(shown.y, shown.m - 1, shown.d, shown.h, shown.min, 0);
+    const diff = desired - shownUTCFromLocal;
+    if (Math.abs(diff) < 60 * 1000) break;
+    utc += diff;
+  }
+  return new Date(utc);
+}
+function nextFromWeekSchedule(week: WeekScheduleJSON | null | undefined, tz: string): { iso: string } | null {
+  if (!week) return null;
+
+  const now = new Date();
+  let best: Date | null = null;
+
+  for (let addDays = 0; addDays < 14; addDays++) {
+    const test = new Date(now.getTime() + addDays * 86400000);
+    const dowShort = weekdayShortInTz(test, tz); 
+    const key = shortToKey(dowShort);            
+    const entries = (week as any)?.[key] as { time: string; duration?: number }[] | undefined;
+    if (!entries?.length) continue;
+
+    const { y, m, d } = ymdInTz(test, tz);
+
+    for (const e of entries) {
+      const [hh, mm] = (e.time || '00:00').split(':').map((n) => parseInt(n, 10) || 0);
+      const candidate = makeUtcForTz({ y, m, d, h: hh, min: mm }, tz);
+      if (candidate.getTime() <= now.getTime()) continue;
+      if (!best || candidate.getTime() < best.getTime()) best = candidate;
+    }
+    if (best) break; 
+  }
+
+  return best ? { iso: best.toISOString() } : null;
+}
+
 export async function fetchHome(): Promise<HomeData> {
   const { data: auth } = await supabase.auth.getUser();
   const user = auth.user;
@@ -123,7 +201,7 @@ export async function fetchHome(): Promise<HomeData> {
 
   const { data: primaryMember } = await supabase
     .from('pod_members')
-    .select('pod_id, is_primary, pods(name, timezone)')
+    .select('pod_id, is_primary, pods(name, timezone, week_schedule)')
     .eq('user_id', userId)
     .order('is_primary', { ascending: false })
     .limit(1)
@@ -132,6 +210,7 @@ export async function fetchHome(): Promise<HomeData> {
   const podId: string | undefined = primaryMember?.pod_id;
   const podName = (primaryMember as any)?.pods?.name ?? 'Your Pod';
   const podTz = (primaryMember as any)?.pods?.timezone ?? (profile?.timezone ?? 'UTC');
+  const weekSchedule: WeekScheduleJSON = (primaryMember as any)?.pods?.week_schedule ?? null;
 
   const { data: members } = podId
     ? await supabase
@@ -265,7 +344,26 @@ export async function fetchHome(): Promise<HomeData> {
       ago: timeAgo(ci.created_at),
     })) ?? [];
 
-  const scheduledAtISO = nextStandup?.scheduled_at ?? null;
+  let scheduledAtISO = nextStandup?.scheduled_at ?? null;
+  let joinable = !!nextStandup?.id;
+  let isFromWeekSchedule = false;
+
+  if (!scheduledAtISO && weekSchedule && podId) {
+    const next = nextFromWeekSchedule(weekSchedule, podTz);
+    if (next) {
+      scheduledAtISO = next.iso;
+      joinable = false; 
+      isFromWeekSchedule = true;
+      if (!participants) {
+        participants = (members ?? []).map((m: any) => ({
+          name: m.profiles?.display_name || 'Dev',
+          avatarUrl: m.profiles?.avatar_url ?? null,
+          status: 'invited' as const,
+        }));
+      }
+    }
+  }
+
   const timeLocal = scheduledAtISO
     ? new Date(scheduledAtISO).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
     : '';
@@ -275,10 +373,12 @@ export async function fetchHome(): Promise<HomeData> {
 
   return {
     user: { name: displayName, streak: profile?.streak_current ?? 0 },
-    todayStandup: nextStandup
+    todayStandup: scheduledAtISO
       ? {
-          standupId: String(nextStandup.id),
-          podId: String(nextStandup.pod_id ?? podId ?? ''),
+          standupId: nextStandup?.id ? String(nextStandup.id) : 'week-schedule',
+          joinable,
+          isFromWeekSchedule,
+          podId: String(nextStandup?.pod_id ?? podId ?? ''),
           pod: podName,
           scheduledAtISO: scheduledAtISO!,
           timePod,

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, Pressable,
   Modal, TextInput, ActivityIndicator,
@@ -44,11 +44,7 @@ export default function PodsScreen() {
   const currentPod = data ?? null;
   const onlineCount = currentPod?.members?.filter(m => !!m.online).length ?? 0;
 
-  const week = useMemo(
-    () => [{ d: 'Mon', t: '—' }, { d: 'Tue', t: '—' }, { d: 'Wed', t: '—' }, { d: 'Thu', t: '—' }, { d: 'Fri', t: '—' }],
-    []
-  );
-
+  // ---------- Empty state
   if (!loading && !currentPod) {
     return (
       <View style={styles.container}>
@@ -69,6 +65,7 @@ export default function PodsScreen() {
           </ScrollView>
         </LinearGradient>
 
+        {/* Create Pod modal */}
         <Modal visible={showCreate} transparent animationType="fade" onRequestClose={() => setShowCreate(false)}>
           <View style={styles.modalBackdrop}>
             <View style={styles.modalCard}>
@@ -115,6 +112,7 @@ export default function PodsScreen() {
     );
   }
 
+  // ---------- Loading
   if (loading || !currentPod) {
     return (
       <View style={[styles.container, { alignItems: 'center', justifyContent: 'center' }]}>
@@ -123,6 +121,7 @@ export default function PodsScreen() {
     );
   }
 
+  // ---------- Main view
   return (
     <View style={styles.container}>
       <LinearGradient colors={['#000000', '#0a0a0a', '#000000']} style={styles.gradient}>
@@ -166,12 +165,12 @@ export default function PodsScreen() {
                   </View>
                 </View>
 
-                {/* Week strip */}
+                {/* Week strip (from DB week_schedule) */}
                 <View style={styles.weekRow}>
-                  {week.map((w) => (
-                    <View key={`${w.d}-${w.t}`} style={styles.weekChip}>
+                  {currentPod.weekSchedule.map((w) => (
+                    <View key={w.d} style={styles.weekChip}>
                       <Text style={styles.weekDay}>{w.d}</Text>
-                      <Text style={styles.weekTime}>{w.t}</Text>
+                      <Text style={styles.weekTime}>{w.times.length ? w.times.join(', ') : '—'}</Text>
                     </View>
                   ))}
                 </View>
@@ -194,7 +193,11 @@ export default function PodsScreen() {
                 <View style={styles.membersSection}>
                   <Text style={styles.membersTitle}>Members ({currentPod.members.length})</Text>
                   {currentPod.members.map((member, index) => (
-                    <Animated.View key={`${member.id}-${index}`} entering={FadeInDown.delay(400 + index * 80).springify()} style={styles.memberRow}>
+                    <Animated.View
+                      key={`${member.id}-${index}`}
+                      entering={FadeInDown.delay(400 + index * 80).springify()}
+                      style={styles.memberRow}
+                    >
                       <View style={styles.memberInfo}>
                         <View style={styles.memberAvatarLarge}>
                           <Text style={styles.memberInitialLarge}>{member.initials}</Text>
@@ -245,6 +248,7 @@ export default function PodsScreen() {
         </ScrollView>
       </LinearGradient>
 
+      {/* Create Pod modal */}
       <Modal visible={showCreate} transparent animationType="fade" onRequestClose={() => setShowCreate(false)}>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
@@ -368,6 +372,7 @@ const styles = StyleSheet.create({
   },
   standupButtonText: { fontSize: 16, fontFamily: 'Inter-SemiBold', color: '#000000', marginHorizontal: 8 },
 
+  // Modal
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 },
   modalCard: { backgroundColor: '#111', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' },
   modalTitle: { color: '#fff', fontFamily: 'Inter-SemiBold', fontSize: 18, marginBottom: 10 },

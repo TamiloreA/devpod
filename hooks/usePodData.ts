@@ -1,15 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 
+export type WeekScheduleJSON =
+  | {
+      mon?: { time: string; duration?: number }[];
+      tue?: { time: string; duration?: number }[];
+      wed?: { time: string; duration?: number }[];
+      thu?: { time: string; duration?: number }[];
+      fri?: { time: string; duration?: number }[];
+      sat?: { time: string; duration?: number }[];
+      sun?: { time: string; duration?: number }[];
+    }
+  | null;
+
 export type PodUIData = {
   podId: string;
   name: string;
   description?: string | null;
   timezone: string;
   streak: number;
+  /** e.g. "Mon 9:30 AM" (real standup if present, else computed from week_schedule) */
   nextStandupTime?: string | null;
   tags: string[];
   members: { id: string; name: string; initials: string; level?: string | null; online?: boolean }[];
+  /** UI-friendly week chips rendered from week_schedule */
+  weekSchedule: { d: 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun'; times: string[] }[];
 };
 
 type CreateInput = { name: string; description?: string; timezone?: string };
@@ -29,6 +44,7 @@ const fmtTimeInTZ = (iso?: string | null, tz?: string | null) => {
   }
 };
 
+// "YYYY-MM-DD" day key evaluated in a timezone
 const dayKeyInTZ = (iso: string, tz: string) => {
   try {
     return new Intl.DateTimeFormat('en-CA', {
@@ -36,7 +52,7 @@ const dayKeyInTZ = (iso: string, tz: string) => {
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
-    }).format(new Date(iso)); 
+    }).format(new Date(iso));
   } catch {
     const d = new Date(iso);
     const y = d.getUTCFullYear();
@@ -99,6 +115,97 @@ function topTags(arrays: (string[] | null | undefined)[], n = 3): string[] {
     .map(([t]) => `#${t}`);
 }
 
+// ---- Week schedule helpers
+const DOW_ORDER: Array<keyof NonNullable<WeekScheduleJSON>> = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+const DOW_LABEL: Record<
+  keyof NonNullable<WeekScheduleJSON>,
+  'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun'
+> = {
+  mon: 'Mon',
+  tue: 'Tue',
+  wed: 'Wed',
+  thu: 'Thu',
+  fri: 'Fri',
+  sat: 'Sat',
+  sun: 'Sun',
+};
+
+const fmtHHMM12 = (hhmm?: string | null) => {
+  if (!hhmm) return null;
+  const [hStr, mStr] = hhmm.split(':');
+  const h = Math.max(0, Math.min(23, parseInt(hStr || '0', 10)));
+  const m = Math.max(0, Math.min(59, parseInt(mStr || '0', 10)));
+  const am = h < 12;
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${m.toString().padStart(2, '0')} ${am ? 'AM' : 'PM'}`;
+};
+
+function toUIWeek(
+  schedule: WeekScheduleJSON | undefined | null
+): { d: 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun'; times: string[] }[] {
+  const safe = schedule ?? {};
+  return DOW_ORDER.map((key) => {
+    const entries = (safe[key] ?? []).filter(Boolean);
+    const times = entries.map((e) => fmtHHMM12(e.time) || '—');
+    return { d: DOW_LABEL[key], times };
+  });
+}
+
+/** Helpers to compute "next from schedule" in a timezone */
+const weekdayIndexInTZ = (d: Date, tz: string) => {
+  const name = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' }).format(d);
+  const map: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return map[name] ?? d.getUTCDay();
+};
+const minutesSinceMidnightInTZ = (d: Date, tz: string) => {
+  const [h, m] = new Intl.DateTimeFormat('en-GB', {
+    timeZone: tz,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+    .format(d)
+    .split(':')
+    .map((v) => parseInt(v, 10));
+  return h * 60 + m;
+};
+const hmToMinutes = (hm: string) => {
+  const [h, m = '0'] = hm.split(':');
+  return parseInt(h, 10) * 60 + parseInt(m, 10);
+};
+/** Returns a label like "Mon 9:30 AM" or null if schedule empty */
+function nextFromWeekSchedule(schedule: WeekScheduleJSON | null | undefined, tz: string): string | null {
+  if (!schedule) return null;
+
+  // Ensure arrays & sort each day's times
+  const norm: Record<string, string[]> = {};
+  for (const k of DOW_ORDER) {
+    norm[k] = (schedule[k] ?? [])
+      .map((e) => e?.time)
+      .filter(Boolean) as string[];
+    norm[k].sort((a, b) => hmToMinutes(a) - hmToMinutes(b));
+  }
+
+  const now = new Date();
+  const todayIdx = weekdayIndexInTZ(now, tz);
+  const nowMins = minutesSinceMidnightInTZ(now, tz);
+
+  // Scan next 7 days
+  for (let off = 0; off < 7; off++) {
+    const idx = (todayIdx + off) % 7;
+    const dow = DOW_ORDER[idx];
+    const times = norm[dow];
+    if (!times.length) continue;
+
+    for (const t of times) {
+      const mins = hmToMinutes(t);
+      if (off === 0 && mins <= nowMins) continue; // already passed today
+      return `${DOW_LABEL[dow]} ${fmtHHMM12(t)}`;
+    }
+  }
+  return null;
+}
+
 export function usePodData() {
   const [data, setData] = useState<PodUIData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -122,9 +229,10 @@ export function usePodData() {
         return;
       }
 
+      // Load primary pod + pod details (including week_schedule JSON)
       const { data: pmRow, error: pmErr } = await supabase
         .from('pod_members')
-        .select('pod_id, is_primary, pods(name, description, timezone)')
+        .select('pod_id, is_primary, pods(name, description, timezone, week_schedule)')
         .eq('user_id', uid)
         .order('is_primary', { ascending: false })
         .limit(1)
@@ -141,7 +249,10 @@ export function usePodData() {
       const podName = (pmRow as any)?.pods?.name ?? '';
       const podDesc = (pmRow as any)?.pods?.description ?? null;
       const tz = (pmRow as any)?.pods?.timezone ?? 'UTC';
+      const weekScheduleJSON = ((pmRow as any)?.pods?.week_schedule ?? null) as WeekScheduleJSON;
+      const weekSchedule = toUIWeek(weekScheduleJSON);
 
+      // Member IDs
       const { data: memberIdsRows, error: idsErr } = await supabase
         .from('pod_members')
         .select('user_id')
@@ -150,6 +261,7 @@ export function usePodData() {
 
       const userIds = (memberIdsRows ?? []).map((r) => r.user_id as string).filter(Boolean);
 
+      // Profiles
       let profilesRows:
         | { id: string; display_name: string | null; level?: string | null }[]
         | null = [];
@@ -168,9 +280,10 @@ export function usePodData() {
           name: p.display_name || 'Member',
           initials: initials(p.display_name),
           level: (p as any).level ?? null,
-          online: false, 
+          online: false, // realtime presence updates below
         })) ?? [];
 
+      // Next standup (pod TZ-aware)
       const { data: next, error: nextErr } = await supabase
         .from('standups')
         .select('id, scheduled_at')
@@ -180,8 +293,22 @@ export function usePodData() {
         .limit(1)
         .maybeSingle();
       if (nextErr) console.error('standups select error', nextErr);
-      const nextStandupTime = fmtTimeInTZ(next?.scheduled_at ?? null, tz);
 
+      let nextStandupTime: string | null = null;
+
+      if (next?.scheduled_at) {
+        // Prefer a real, upcoming standup
+        const weekday = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' }).format(
+          new Date(next.scheduled_at)
+        );
+        const time = fmtTimeInTZ(next.scheduled_at, tz);
+        nextStandupTime = `${weekday} ${time}`;
+      } else {
+        // Fallback: compute from week_schedule
+        nextStandupTime = nextFromWeekSchedule(weekScheduleJSON, tz);
+      }
+
+      // Streak (last 30 days)
       const sinceISO = new Date(Date.now() - 1000 * 60 * 60 * 24 * 30).toISOString();
       const { data: doneStandups, error: sErr } = await supabase
         .from('standups')
@@ -205,6 +332,7 @@ export function usePodData() {
 
       const streak = computePodStreak((doneStandups ?? []) as StandupRow[], checkins, tz, 1);
 
+      // Dynamic tags from recent check-ins + blockers
       const { data: recentCheckins, error: rcErr } = await supabase
         .from('standup_checkins')
         .select('tags, created_at, standups!inner(pod_id)')
@@ -239,6 +367,7 @@ export function usePodData() {
         nextStandupTime,
         tags: dynamicTags,
         members,
+        weekSchedule,
       });
     } catch (e: any) {
       console.error('usePodData load error', e);
@@ -253,6 +382,7 @@ export function usePodData() {
     load();
   }, [load]);
 
+  // ----- Presence (Realtime)
   useEffect(() => {
     if (presenceChannelRef.current) {
       presenceChannelRef.current.unsubscribe();
@@ -269,7 +399,7 @@ export function usePodData() {
 
     channel.on('presence', { event: 'sync' }, () => {
       const state = channel.presenceState() as Record<string, any[]>;
-      const onlineIds = new Set(Object.keys(state)); 
+      const onlineIds = new Set(Object.keys(state));
 
       setData((curr) =>
         curr
@@ -302,31 +432,43 @@ export function usePodData() {
     };
   }, [data?.podId, authUid]);
 
-  const create = useCallback(async ({ name, description, timezone }: CreateInput) => {
-    const { data: auth } = await supabase.auth.getUser();
-    const uid = auth.user?.id;
-    if (!uid) throw new Error('Not signed in');
+  const create = useCallback(
+    async ({ name, description, timezone }: CreateInput) => {
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth.user?.id;
+      if (!uid) throw new Error('Not signed in');
 
-    const { data: pod, error } = await supabase
-      .from('pods')
-      .insert([{ name, description, timezone: timezone ?? 'UTC', creator_id: uid }])
-      .select('id, name, description, timezone')
-      .single();
-    if (error) {
-      console.error('pods insert error', error);
-      throw error;
-    }
+      // Seed a sensible default Mon–Fri 09:30 schedule
+      const defaultWeek: WeekScheduleJSON = {
+        mon: [{ time: '09:30', duration: 15 }],
+        tue: [{ time: '09:30', duration: 15 }],
+        wed: [{ time: '09:30', duration: 15 }],
+        thu: [{ time: '09:30', duration: 15 }],
+        fri: [{ time: '09:30', duration: 15 }],
+      };
 
-    const { error: mErr } = await supabase
-      .from('pod_members')
-      .insert([{ pod_id: pod.id, user_id: uid, is_primary: true, role: 'owner' }]);
-    if (mErr) {
-      console.error('pod_members insert error', mErr);
-      throw mErr;
-    }
+      const { data: pod, error } = await supabase
+        .from('pods')
+        .insert([{ name, description, timezone: timezone ?? 'UTC', creator_id: uid, week_schedule: defaultWeek }])
+        .select('id, name, description, timezone')
+        .single();
+      if (error) {
+        console.error('pods insert error', error);
+        throw error;
+      }
 
-    await load();
-  }, [load]);
+      const { error: mErr } = await supabase
+        .from('pod_members')
+        .insert([{ pod_id: pod.id, user_id: uid, is_primary: true, role: 'owner' }]);
+      if (mErr) {
+        console.error('pod_members insert error', mErr);
+        throw mErr;
+      }
+
+      await load();
+    },
+    [load]
+  );
 
   const leave = useCallback(async () => {
     const { data: auth } = await supabase.auth.getUser();
