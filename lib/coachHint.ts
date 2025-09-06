@@ -31,7 +31,6 @@ export async function generateCoachHintForUser(userId: string): Promise<string> 
 
     podId = standup?.pod_id;
 
-    // 3) Next standup in that pod for framing (optional)
     if (podId) {
       const { data: next } = await supabase
         .from('standups')

@@ -19,18 +19,8 @@ export function usePresence(session: Session | null) {
     lastTouchRef.current = now;
 
     try {
-      // Prefer RPC (server time). If you haven't created it yet,
-      // you can fallback to a direct update (see comment below).
       await supabase.rpc('touch_last_seen');
-
-      // Fallback (uncomment if not using RPC):
-      // await supabase
-      //   .from('profiles')
-      //   .update({ last_seen_at: new Date().toISOString() })
-      //   .eq('id', userId);
     } catch (e) {
-      // non-blocking; swallow errors
-      // console.debug('presence touch failed', e);
     }
   }
 

@@ -105,8 +105,6 @@ export default function ProfileScreen() {
     try {
       setSigningOut(true);
       await supabase.auth.signOut();
-      // Optional: if you want to also invalidate sessions on other devices, use:
-      // await supabase.auth.signOut({ scope: 'global' });
       router.replace('/(auth)/sign-in');
     } catch (e: any) {
       Alert.alert('Sign out failed', e?.message ?? 'Please try again.');

@@ -93,8 +93,8 @@ export default function HomeScreen() {
   };
 
   const hasCoach = !!(coachHint && coachHint.trim());
-  const hasCard = !!todayStandup; // show card content (even if not joinable)
-  const canJoin = !!(todayStandup && todayStandup.joinable); // enable button only when real standup exists
+  const hasCard = !!todayStandup; 
+  const canJoin = !!(todayStandup && todayStandup.joinable); 
 
   const a11yKillProps = {
     accessible: false as const,
@@ -128,7 +128,6 @@ export default function HomeScreen() {
     (p) => p.status === 'declined'
   ).length;
 
-  // Display time (design shows a single time without TZ chips)
   const timeForDisplay = hasCard ? todayStandup!.timePod : '—';
 
   return (
@@ -142,7 +141,6 @@ export default function HomeScreen() {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {/* Header */}
           <Animated.View
             entering={FadeInDown.delay(200).springify()}
             style={styles.header}
@@ -155,7 +153,6 @@ export default function HomeScreen() {
             </View>
           </Animated.View>
 
-          {/* Coach */}
           <Animated.View
             entering={FadeInDown.delay(240).springify()}
             style={styles.cardContainer}
@@ -185,7 +182,6 @@ export default function HomeScreen() {
             </GlassCard>
           </Animated.View>
 
-          {/* Quick Row */}
           <Animated.View
             entering={FadeInDown.delay(280).springify()}
             style={styles.quickRow}
@@ -260,7 +256,6 @@ export default function HomeScreen() {
             </GlassCard>
           </Animated.View>
 
-          {/* Your Pod */}
           <Animated.View
             entering={FadeInDown.delay(320).springify()}
             style={styles.cardContainer}
@@ -296,7 +291,6 @@ export default function HomeScreen() {
             </GlassCard>
           </Animated.View>
 
-          {/* Next Standup (design preserved) */}
           <Animated.View
             entering={FadeInDown.delay(360).springify()}
             style={styles.cardContainer}
@@ -325,7 +319,6 @@ export default function HomeScreen() {
                   </View>
                 )}
 
-                {/* Attendance */}
                 {hasCard && participants.length > 0 && (
                   <>
                     <View style={styles.membersRow}>
@@ -417,7 +410,6 @@ export default function HomeScreen() {
             </BlurView>
           </Animated.View>
 
-          {/* Stats */}
           <Animated.View
             entering={FadeInDown.delay(420).springify()}
             style={styles.statsGrid}
@@ -447,7 +439,6 @@ export default function HomeScreen() {
             </BlurView>
           </Animated.View>
 
-          {/* Ship Log */}
           <Animated.View
             entering={FadeInDown.delay(460).springify()}
             style={styles.cardContainer}
@@ -480,7 +471,6 @@ export default function HomeScreen() {
             </GlassCard>
           </Animated.View>
 
-          {/* Recent Activity */}
           <Animated.View
             entering={FadeInDown.delay(500).springify()}
             style={styles.cardContainer}
@@ -575,7 +565,7 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   standupTime: { fontSize: 14, fontFamily: 'Inter-Regular', color: '#999999' },
-  /* NEW: TZ toggle styles */ tzToggleRow: {
+  tzToggleRow: {
     flexDirection: 'row',
     gap: 8 as any,
     marginTop: 4,
@@ -592,7 +582,7 @@ const styles = StyleSheet.create({
   tzChipActive: { backgroundColor: '#ffffff', borderColor: '#ffffff' },
   tzChipText: { color: '#cfcfcf', fontSize: 11, fontFamily: 'Inter-Medium' },
   tzChipTextActive: { color: '#000000' },
-  /* Attendance */ membersRow: {
+  membersRow: {
     flexDirection: 'row',
     alignItems: 'center',
     marginTop: 12,

@@ -20,6 +20,7 @@
     "expo-auth-session": "^6.2.1",
     "expo-blur": "~14.1.3",
     "expo-camera": "~16.1.5",
+    "expo-clipboard": "^7.1.5",
     "expo-constants": "~17.1.3",
     "expo-font": "~13.2.2",
     "expo-haptics": "~14.1.3",
