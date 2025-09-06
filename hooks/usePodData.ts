@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 
-const INVITE_BASE_URL = 'https://app.example.com'; 
-const APP_SCHEME = 'standups';                    
+const INVITE_BASE_URL = 'https://app.example.com';
+const APP_SCHEME = 'standups';
 
 export type WeekScheduleJSON =
   | {
@@ -15,6 +15,14 @@ export type WeekScheduleJSON =
       sun?: { time: string; duration?: number }[];
     }
   | null;
+
+export type PodSummary = {
+  id: string;
+  name: string;
+  isPrimary: boolean;
+  timezone?: string | null;
+  description?: string | null;
+};
 
 export type PodUIData = {
   podId: string;
@@ -34,11 +42,14 @@ type CheckinRow = { standup_id: string };
 
 export type InviteLinkResult = {
   code: string;
-  url: string;       
-  deepLink: string;  
-  expiresAt: string; 
+  url: string;
+  deepLink: string;
+  expiresAt: string;
   maxUses?: number | null;
 };
+
+const toSingle = <T,>(v: T | T[] | null | undefined): T | null =>
+  Array.isArray(v) ? (v[0] ?? null) : v ?? null;
 
 const fmtTimeInTZ = (iso?: string | null, tz?: string | null) => {
   if (!iso) return null;
@@ -165,8 +176,23 @@ const randomCode = (len = 10) => {
   return out;
 };
 
+type PodRow = {
+  id: string;
+  name: string | null;
+  description: string | null;
+  timezone: string | null;
+  week_schedule: WeekScheduleJSON;
+};
+
+type PodMemberWithPod = {
+  pod_id: string;
+  is_primary: boolean;
+  pods: PodRow | PodRow[] | null; 
+};
+
 export function usePodData() {
   const [data, setData] = useState<PodUIData | null>(null);
+  const [pods, setPods] = useState<PodSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [authUid, setAuthUid] = useState<string | null>(null);
@@ -183,49 +209,69 @@ export function usePodData() {
       setAuthUid(uid);
 
       if (!uid) {
+        setPods([]);
         setData(null);
         setLoading(false);
         return;
       }
 
-      const { data: pmRow, error: pmErr } = await supabase
+      const { data: memRows, error: memErr } = await supabase
         .from('pod_members')
-        .select('pod_id, is_primary, pods(name, description, timezone, week_schedule)')
+        .select('pod_id, is_primary, pods(id, name, description, timezone, week_schedule)')
         .eq('user_id', uid)
-        .order('is_primary', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+        .returns<PodMemberWithPod[]>();
 
-      if (pmErr || !pmRow?.pod_id) {
-        if (pmErr) console.error('pod_members primary select error', pmErr);
+      if (memErr) {
+        console.error('pod_members select error', memErr);
+        setPods([]);
         setData(null);
         setLoading(false);
         return;
       }
 
-      const podId = pmRow.pod_id as string;
-      const podName = (pmRow as any)?.pods?.name ?? '';
-      const podDesc = (pmRow as any)?.pods?.description ?? null;
-      const tz = (pmRow as any)?.pods?.timezone ?? 'UTC';
-      const weekScheduleJSON = ((pmRow as any)?.pods?.week_schedule ?? null) as WeekScheduleJSON;
+      const summaries: PodSummary[] = (memRows ?? []).map((r) => {
+        const pod = toSingle(r.pods);
+        return {
+          id: r.pod_id,
+          name: pod?.name ?? 'Pod',
+          isPrimary: !!r.is_primary,
+          timezone: pod?.timezone ?? 'UTC',
+          description: pod?.description ?? null,
+        };
+      });
+      setPods(summaries);
+
+      const active = (memRows ?? []).find((r) => r.is_primary) ?? (memRows ?? [])[0];
+      if (!active?.pod_id) {
+        setData(null);
+        setLoading(false);
+        return;
+      }
+
+      const pod = toSingle(active.pods);
+      const podId = active.pod_id as string;
+      const podName = pod?.name ?? '';
+      const podDesc = pod?.description ?? null;
+      const tz = pod?.timezone ?? 'UTC';
+      const weekScheduleJSON = (pod?.week_schedule ?? null) as WeekScheduleJSON;
       const weekSchedule = toUIWeek(weekScheduleJSON);
 
       const { data: memberIdsRows, error: idsErr } = await supabase
         .from('pod_members')
         .select('user_id')
-        .eq('pod_id', podId);
+        .eq('pod_id', podId)
+        .returns<{ user_id: string }[]>();
       if (idsErr) console.error('pod_members member ids error', idsErr);
 
-      const userIds = (memberIdsRows ?? []).map((r) => r.user_id as string).filter(Boolean);
+      const userIds = (memberIdsRows ?? []).map((r) => r.user_id).filter(Boolean);
 
-      let profilesRows:
-        | { id: string; display_name: string | null; level?: string | null }[]
-        | null = [];
+      let profilesRows: { id: string; display_name: string | null; level: string | null }[] = [];
       if (userIds.length) {
         const { data: pRows, error: pErr } = await supabase
           .from('profiles')
           .select('id, display_name, level')
-          .in('id', userIds);
+          .in('id', userIds)
+          .returns<{ id: string; display_name: string | null; level: string | null }[]>();
         if (pErr) console.error('profiles select error', pErr);
         profilesRows = pRows ?? [];
       }
@@ -235,8 +281,8 @@ export function usePodData() {
           id: p.id,
           name: p.display_name || 'Member',
           initials: initials(p.display_name),
-          level: (p as any).level ?? null,
-          online: false, 
+          level: p.level ?? null,
+          online: false,
         })) ?? [];
 
       const { data: next, error: nextErr } = await supabase
@@ -246,7 +292,8 @@ export function usePodData() {
         .gte('scheduled_at', new Date().toISOString())
         .order('scheduled_at', { ascending: true })
         .limit(1)
-        .maybeSingle();
+        .maybeSingle()
+        .returns<StandupRow>();
       if (nextErr) console.error('standups select error', nextErr);
       const nextStandupTime = fmtTimeInTZ(next?.scheduled_at ?? null, tz);
 
@@ -257,7 +304,8 @@ export function usePodData() {
         .eq('pod_id', podId)
         .eq('status', 'done')
         .gte('scheduled_at', sinceISO)
-        .order('scheduled_at', { ascending: false });
+        .order('scheduled_at', { ascending: false })
+        .returns<StandupRow[]>();
       if (sErr) console.error('done standups error', sErr);
 
       let checkins: CheckinRow[] = [];
@@ -266,7 +314,8 @@ export function usePodData() {
         const { data: ciRows, error: cErr } = await supabase
           .from('standup_checkins')
           .select('standup_id')
-          .in('standup_id', ids);
+          .in('standup_id', ids)
+          .returns<CheckinRow[]>();
         if (cErr) console.error('standup_checkins error', cErr);
         checkins = (ciRows ?? []) as CheckinRow[];
       }
@@ -312,6 +361,7 @@ export function usePodData() {
     } catch (e: any) {
       console.error('usePodData load error', e);
       setError(e?.message ?? 'Failed to load pod data');
+      setPods([]);
       setData(null);
     } finally {
       setLoading(false);
@@ -339,13 +389,9 @@ export function usePodData() {
     channel.on('presence', { event: 'sync' }, () => {
       const state = channel.presenceState() as Record<string, any[]>;
       const onlineIds = new Set(Object.keys(state));
-
       setData((curr) =>
         curr
-          ? {
-              ...curr,
-              members: curr.members.map((m) => ({ ...m, online: onlineIds.has(m.id) })),
-            }
+          ? { ...curr, members: curr.members.map((m) => ({ ...m, online: onlineIds.has(m.id) })) }
           : curr
       );
     });
@@ -414,6 +460,20 @@ export function usePodData() {
     await load();
   }, [data?.podId, load]);
 
+  const setPrimary = useCallback(
+    async (podId: string) => {
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth.user?.id;
+      if (!uid) throw new Error('Not signed in');
+
+      await supabase.from('pod_members').update({ is_primary: false }).eq('user_id', uid);
+      await supabase.from('pod_members').update({ is_primary: true }).eq('user_id', uid).eq('pod_id', podId);
+
+      await load();
+    },
+    [load]
+  );
+
   const createInviteLink = useCallback(
     async (opts?: { expiresInHours?: number; maxUses?: number; preferDeepLink?: boolean }): Promise<string> => {
       const podId = data?.podId;
@@ -423,7 +483,7 @@ export function usePodData() {
       const uid = auth.user?.id;
       if (!uid) throw new Error('Not signed in');
 
-      const expiresInHours = Math.max(1, Math.min(24 * 30, opts?.expiresInHours ?? 72)); // default 72h
+      const expiresInHours = Math.max(1, Math.min(24 * 30, opts?.expiresInHours ?? 72));
       const expiresAt = new Date(Date.now() + expiresInHours * 3600 * 1000).toISOString();
       const code = randomCode(10);
       const maxUses = opts?.maxUses ?? 50;
@@ -434,8 +494,7 @@ export function usePodData() {
 
       if (invErr) {
         console.error('pod_invites insert error', invErr);
-        const fallback = `${INVITE_BASE_URL}/join?podId=${encodeURIComponent(podId)}`;
-        return fallback;
+        return `${INVITE_BASE_URL}/join?podId=${encodeURIComponent(podId)}`;
       }
 
       const url = `${INVITE_BASE_URL}/join/${code}`;
@@ -445,5 +504,15 @@ export function usePodData() {
     [data?.podId]
   );
 
-  return { data, loading, error, create, leave, reload: load, createInviteLink };
+  return {
+    data,         
+    pods,  
+    loading,
+    error,
+    create,
+    leave,
+    reload: load,
+    setPrimary, 
+    createInviteLink,
+  };
 }
