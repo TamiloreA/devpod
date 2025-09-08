@@ -63,18 +63,15 @@ export default function PodsScreen() {
   const [saving, setSaving] = useState(false);
   const [linkBusy, setLinkBusy] = useState(false);
 
-  // Pod switcher
   const [showSwitch, setShowSwitch] = useState(false);
   const openSwitch = () => setShowSwitch(true);
   const closeSwitch = () => setShowSwitch(false);
 
-  // ----- Auth UID
   const [authUid, setAuthUid] = useState<string | null>(null);
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setAuthUid(data.user?.id ?? null));
   }, []);
 
-  // ----- Invitee modal (review invites sent TO ME)
   const [showInvites, setShowInvites] = useState(false);
   const [invLoading, setInvLoading] = useState(false);
   const [invites, setInvites] = useState<InviteRow[]>([]);
@@ -109,18 +106,9 @@ export default function PodsScreen() {
     if (!authUid) return;
     setActingId(inv.id);
     try {
-      const wantPrimary = !data; // if no current pod visible, make primary
-      const { error: mErr } = await supabase
-        .from('pod_members')
-        .insert([{ pod_id: inv.pod_id, user_id: authUid, role: 'member', is_primary: wantPrimary }]);
-      if (mErr && (mErr as any).code !== '23505') throw mErr; // ignore duplicate
-
-      const { error: uErr } = await supabase
-        .from('pod_invites')
-        .update({ status: 'accepted' })
-        .eq('id', inv.id);
-      if (uErr) throw uErr;
-
+      const { error: rpcErr } = await supabase.rpc('accept_invite', { p_invite_id: inv.id });
+      if (rpcErr) throw rpcErr;
+  
       await refreshInvites();
       await reload();
       Alert.alert('Joined', `You joined ${inv.pods?.name ?? 'the pod'}.`);
@@ -149,12 +137,11 @@ export default function PodsScreen() {
     }
   };
 
-  // ----- Invite People modal (search & invite IN-APP)
   const [showInvitePeople, setShowInvitePeople] = useState(false);
   const [search, setSearch] = useState('');
   const [searchBusy, setSearchBusy] = useState(false);
   const [results, setResults] = useState<SearchedProfile[]>([]);
-  const [sentBusy, setSentBusy] = useState<string | null>(null); // user_id or invite_id (when cancel)
+  const [sentBusy, setSentBusy] = useState<string | null>(null); 
   const [sentInvites, setSentInvites] = useState<SentInviteRow[]>([]);
   const [sentLoading, setSentLoading] = useState(false);
   const currentPodId = data?.podId ?? null;
@@ -167,7 +154,6 @@ export default function PodsScreen() {
     setSearch('');
   };
 
-  // FIX: avoid FK-dependent join, resolve display names client-side
   const fetchSentInvites = async () => {
     if (!authUid || !currentPodId) return;
     setSentLoading(true);
@@ -187,7 +173,6 @@ export default function PodsScreen() {
 
       const base = (rows ?? []) as SentInviteRow[];
 
-      // fetch profile names for those invited_user_id values
       const ids = Array.from(new Set(base.map(r => r.invited_user_id).filter(Boolean))) as string[];
       let nameById = new Map<string, string | null>();
       if (ids.length) {
@@ -213,7 +198,6 @@ export default function PodsScreen() {
     }
   };
 
-  // Debounced search by display_name (exclude members & myself; also exclude already pending)
   useEffect(() => {
     if (!showInvitePeople) return;
     const t = setTimeout(async () => {
@@ -253,7 +237,6 @@ export default function PodsScreen() {
       }
     }, 350);
     return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, showInvitePeople, currentPodId, authUid, sentInvites]);
 
   const sendInvite = async (inviteeId: string) => {
@@ -298,7 +281,6 @@ export default function PodsScreen() {
     }
   };
 
-  // ----- UI helpers
   const buttonAnimatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: buttonScale.value }] }));
   const handleJoinStandup = () => {
     buttonScale.value = withSpring(0.95, { duration: 100 }, () => {
@@ -321,7 +303,6 @@ export default function PodsScreen() {
   const currentPod = data ?? null;
   const onlineCount = currentPod?.members?.filter(m => !!m.online).length ?? 0;
 
-  // ---------- Empty state
   if (!loading && !currentPod) {
     return (
       <View style={styles.container}>
@@ -343,7 +324,6 @@ export default function PodsScreen() {
           </ScrollView>
         </LinearGradient>
 
-        {/* Create Pod modal */}
         <Modal visible={showCreate} transparent animationType="fade" onRequestClose={() => setShowCreate(false)}>
           <View style={styles.modalBackdrop}>
             <View style={styles.modalCard}>
@@ -378,7 +358,6 @@ export default function PodsScreen() {
           </View>
         </Modal>
 
-        {/* Invitee modal */}
         <Modal visible={showInvites} transparent animationType="fade" onRequestClose={() => setShowInvites(false)}>
           <View style={styles.modalBackdrop}>
             <View style={styles.modalCard}>
@@ -428,7 +407,6 @@ export default function PodsScreen() {
     );
   }
 
-  // ---------- Loading
   if (loading || !currentPod) {
     return (
       <View style={[styles.container, { alignItems: 'center', justifyContent: 'center' }]}>
@@ -437,7 +415,6 @@ export default function PodsScreen() {
     );
   }
 
-  // ---------- Actions (Share keeps link flow)
   const onShareCopy = async () => {
     if (!currentPod) return;
     try {
@@ -453,7 +430,6 @@ export default function PodsScreen() {
     }
   };
 
-  // ---------- Main view
   return (
     <View style={styles.container}>
       <LinearGradient colors={['#000000', '#0a0a0a', '#000000']} style={styles.gradient}>
@@ -461,7 +437,6 @@ export default function PodsScreen() {
           <Animated.View entering={FadeInDown.delay(200).springify()} style={styles.header}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <Text style={styles.title}>Your Pod</Text>
-              {/* Quick pod count / switcher opener */}
               {pods && pods.length > 1 && (
                 <Pressable onPress={openSwitch} style={styles.podSwitchPill}>
                   <Users size={14} color="#fff" />
@@ -485,7 +460,6 @@ export default function PodsScreen() {
             <BlurView intensity={25} style={styles.podCardGlass}>
               <View style={styles.podCard}>
 
-                {/* Header */}
                 <View style={styles.podHeader}>
                   <View style={{ flex: 1, paddingRight: 12 }}>
                     <Text style={styles.podName}>{currentPod.name}</Text>
@@ -513,7 +487,6 @@ export default function PodsScreen() {
                   </View>
                 </View>
 
-                {/* Week strip */}
                 <View style={styles.weekRow}>
                   {currentPod.weekSchedule.map((w) => (
                     <View key={w.d} style={styles.weekChip}>
@@ -523,7 +496,6 @@ export default function PodsScreen() {
                   ))}
                 </View>
 
-                {/* Next standup */}
                 <View style={styles.nextStandupContainer}>
                   <View style={styles.nextStandupHeader}>
                     <Clock color="#ffffff" size={18} />
@@ -537,7 +509,6 @@ export default function PodsScreen() {
                   </Text>
                 </View>
 
-                {/* Members */}
                 <View style={styles.membersSection}>
                   <Text style={styles.membersTitle}>Members ({currentPod.members.length})</Text>
                   {currentPod.members.map((member, index) => (
@@ -566,9 +537,7 @@ export default function PodsScreen() {
                   ))}
                 </View>
 
-                {/* Actions */}
                 <View style={styles.actionsRow}>
-                  {/* OPEN Invite People modal (in-app search/invite) */}
                   <Pressable style={styles.actionBtn} onPress={openInvitePeople}>
                     <UserPlus size={16} color="#000" />
                     <Text style={styles.actionBtnText}>Invite</Text>
@@ -583,7 +552,6 @@ export default function PodsScreen() {
                   </Pressable>
                 </View>
 
-                {/* Join */}
                 <Animated.View style={buttonAnimatedStyle}>
                   <TouchableOpacity style={styles.standupButton} onPress={handleJoinStandup} activeOpacity={0.8}>
                     <Mic color="#000000" size={20} />
@@ -597,7 +565,6 @@ export default function PodsScreen() {
         </ScrollView>
       </LinearGradient>
 
-      {/* Create Pod modal */}
       <Modal visible={showCreate} transparent animationType="fade" onRequestClose={() => setShowCreate(false)}>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
