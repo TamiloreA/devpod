@@ -599,7 +599,6 @@ export default function PodsScreen() {
         </View>
       </Modal>
 
-      {/* Invitee modal */}
       <Modal visible={showInvites} transparent animationType="fade" onRequestClose={() => setShowInvites(false)}>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
