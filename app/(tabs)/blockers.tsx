@@ -1,29 +1,14 @@
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  TextInput,
-  StyleSheet,
-  Modal,
-  Dimensions,
-  RefreshControl,
-  Alert,
+  View, Text, ScrollView, TouchableOpacity, TextInput, StyleSheet,
+  Modal, Dimensions, RefreshControl, Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
-import Animated, {
-  FadeInDown,
-  FadeInUp,
-  SlideInRight,
-  useSharedValue,
-  useAnimatedStyle,
-  withSpring,
-} from 'react-native-reanimated';
+import Animated, { FadeInDown, FadeInUp, useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
 import { Plus, Clock, X, Send, Lightbulb, MessageSquare } from 'lucide-react-native';
 import { supabase } from '@/lib/supabase';
-import { useLocalSearchParams } from 'expo-router'; 
+import { useLocalSearchParams } from 'expo-router';
 
 const { width, height } = Dimensions.get('window');
 
@@ -46,36 +31,16 @@ const timeAgo = (input: string | Date): string => {
   return `${y}y`;
 };
 
-const parseTags = (input: string): string[] => {
-  if (!input?.trim()) return [];
-  const parts = input
+const parseTags = (input: string): string[] =>
+  Array.from(new Set((input || '')
     .split(/[, ]+/)
     .map((s) => s.replace(/^#/, '').trim().toLowerCase())
-    .filter(Boolean);
-  return Array.from(new Set(parts));
-};
+    .filter(Boolean)));
 
-const getLevelColor = (level: string) => {
-  switch (level) {
-    case 'Senior': return '#00ff88';
-    case 'Mid': return '#ffaa00';
-    case 'Junior': return '#6699ff';
-    default: return '#ffffff';
-  }
-};
-const getStatusColor = (status: string) => {
-  switch (status) {
-    case 'open': return '#ff6b6b';
-    case 'helping': return '#ffaa00';
-    case 'resolved': return '#00ff88';
-    default: return '#ffffff';
-  }
-};
-const getSeverityColor = (sev: 'low' | 'medium' | 'high') => {
-  if (sev === 'high') return '#ff6b6b';
-  if (sev === 'medium') return '#ffaa00';
-  return '#59d985';
-};
+const getStatusColor = (status: string) =>
+  status === 'open' ? '#ff6b6b' : status === 'helping' ? '#ffaa00' : status === 'resolved' ? '#00ff88' : '#ffffff';
+
+const getSeverityColor = (sev: 'low' | 'medium' | 'high') => (sev === 'high' ? '#ff6b6b' : sev === 'medium' ? '#ffaa00' : '#59d985');
 
 type BlockerRow = {
   id: string;
@@ -85,12 +50,25 @@ type BlockerRow = {
   tags: string[] | null;
   status: 'open' | 'helping' | 'resolved';
   created_at: string;
+  created_by: string | null;
+  helper_user_id: string | null;
+};
+
+type HelpReq = {
+  id: string;
+  pod_id: string;
+  blocker_id: string;
+  requester_user_id: string;
+  status: 'pending' | 'accepted' | 'rejected' | 'withdrawn';
+  created_at: string;
 };
 
 export default function BlockersScreen() {
-  const params = useLocalSearchParams<{ raise?: string }>(); 
+  const params = useLocalSearchParams<{ raise?: string }>();
 
+  const [authUid, setAuthUid] = useState<string | null>(null);
   const [podId, setPodId] = useState<string | null>(null);
+
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [blockers, setBlockers] = useState<BlockerRow[]>([]);
@@ -99,31 +77,28 @@ export default function BlockersScreen() {
   const [q, setQ] = useState('');
 
   const [composeText, setComposeText] = useState('');
-  const [triage, setTriage] = useState<{
-    severity: 'low' | 'medium' | 'high';
-    tags: string[];
-    note: string;
-  } | null>(null);
+  const [triage, setTriage] = useState<{ severity: 'low' | 'medium' | 'high'; tags: string[]; note: string } | null>(null);
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [blockerText, setBlockerText] = useState('');
   const [creating, setCreating] = useState(false);
 
+  const rtBlockersRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const rtHelpRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+
+  const [myHelp, setMyHelp] = useState<Record<string, HelpReq['status']>>({});
+
   const buttonScale = useSharedValue(1);
-  const buttonAnimatedStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: buttonScale.value }],
-  }));
+  const buttonAnimatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: buttonScale.value }] }));
 
   useEffect(() => {
     (async () => {
       try {
         setLoading(true);
         const { data: auth } = await supabase.auth.getUser();
-        const uid = auth.user?.id;
-        if (!uid) {
-          setLoading(false);
-          return;
-        }
+        const uid = auth.user?.id ?? null;
+        setAuthUid(uid);
+        if (!uid) { setLoading(false); return; }
 
         const { data: pm, error: pmErr } = await supabase
           .from('pod_members')
@@ -132,18 +107,20 @@ export default function BlockersScreen() {
           .order('is_primary', { ascending: false })
           .limit(1)
           .maybeSingle();
-
         if (pmErr) throw pmErr;
+
         const p = pm?.pod_id ?? null;
         setPodId(p);
 
         if (p) {
           await loadBlockers(p);
+          await loadMyHelpRequests(p, uid);
         } else {
           setBlockers([]);
+          setMyHelp({});
         }
       } catch (e: any) {
-        console.error('blockers.load init', e);
+        console.error('blockers.init', e);
         Alert.alert('Error', e?.message ?? 'Could not load blockers.');
       } finally {
         setLoading(false);
@@ -152,123 +129,218 @@ export default function BlockersScreen() {
   }, []);
 
   useEffect(() => {
-    if (params.raise === '1') {
-      setShowCreateModal(true);
-    }
-  }, [params.raise]); 
+    if (params.raise === '1') setShowCreateModal(true);
+  }, [params.raise]);
+
+  useEffect(() => {
+    if (!podId) return;
+    if (rtBlockersRef.current) { rtBlockersRef.current.unsubscribe(); rtBlockersRef.current = null; }
+
+    const ch = supabase
+      .channel(`rt-blockers:${podId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'blockers', filter: `pod_id=eq.${podId}` }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          const row = payload.new as BlockerRow;
+          setBlockers((prev) => (prev.some((b) => b.id === row.id) ? prev : [row, ...prev])
+            .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at)));
+        } else if (payload.eventType === 'UPDATE') {
+          const row = payload.new as BlockerRow;
+          setBlockers((prev) => prev.map((b) => (b.id === row.id ? row : b)));
+        } else if (payload.eventType === 'DELETE') {
+          const row = payload.old as BlockerRow;
+          setBlockers((prev) => prev.filter((b) => b.id !== row.id));
+        }
+      })
+      .subscribe();
+    rtBlockersRef.current = ch;
+    return () => { ch.unsubscribe(); rtBlockersRef.current = null; };
+  }, [podId]);
+
+  useEffect(() => {
+    if (!podId || !authUid) return;
+    if (rtHelpRef.current) { rtHelpRef.current.unsubscribe(); rtHelpRef.current = null; }
+
+    const ch = supabase
+      .channel(`rt-bhr:${podId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'blocker_help_requests', filter: `pod_id=eq.${podId}` }, (payload) => {
+        const row = (payload.new ?? payload.old) as HelpReq;
+        if (!row || row.requester_user_id !== authUid) return;
+        setMyHelp((prev) => {
+          const next = { ...prev };
+          if (payload.eventType === 'DELETE') {
+            delete next[row.blocker_id];
+          } else {
+            next[row.blocker_id] = (payload.new as HelpReq)?.status ?? prev[row.blocker_id];
+          }
+          return next;
+        });
+      })
+      .subscribe();
+    rtHelpRef.current = ch;
+    return () => { ch.unsubscribe(); rtHelpRef.current = null; };
+  }, [podId, authUid]);
 
   const loadBlockers = useCallback(async (p: string) => {
     const { data, error } = await supabase
       .from('blockers')
-      .select('id, pod_id, title, description, tags, status, created_at')
+      .select('id, pod_id, title, description, tags, status, created_at, created_by, helper_user_id')
       .eq('pod_id', p)
       .order('created_at', { ascending: false });
     if (error) throw error;
     setBlockers((data ?? []) as BlockerRow[]);
   }, []);
 
+  const loadMyHelpRequests = useCallback(async (p: string, uid: string) => {
+    const { data, error } = await supabase
+      .from('blocker_help_requests')
+      .select('blocker_id, status')
+      .eq('pod_id', p)
+      .eq('requester_user_id', uid);
+    if (error) throw error;
+    const m: Record<string, HelpReq['status']> = {};
+    (data ?? []).forEach((r: any) => { m[r.blocker_id] = r.status; });
+    setMyHelp(m);
+  }, []);
+
   const onRefresh = useCallback(async () => {
-    if (!podId) return;
+    if (!podId || !authUid) return;
     try {
       setRefreshing(true);
-      await loadBlockers(podId);
+      await Promise.all([loadBlockers(podId), loadMyHelpRequests(podId, authUid)]);
     } catch (e: any) {
       console.error('blockers.refresh', e);
     } finally {
       setRefreshing(false);
     }
-  }, [podId, loadBlockers]);
+  }, [podId, authUid, loadBlockers, loadMyHelpRequests]);
 
   const runTriage = (text: string) => {
     const lower = text.toLowerCase();
     const severity: 'low' | 'medium' | 'high' =
-      lower.includes('crash') || lower.includes('freeze')
-        ? 'high'
-        : lower.includes('perf') || lower.includes('slow')
-        ? 'medium'
-        : 'low';
-    const tags = [
+      lower.includes('crash') || lower.includes('freeze') || lower.includes('fatal') ? 'high'
+      : lower.includes('perf') || lower.includes('slow') || lower.includes('lag') ? 'medium'
+      : 'low';
+    const inferred = [
       lower.includes('redux') && 'redux',
       lower.includes('rtk') && 'rtk-query',
       lower.includes('navigation') && 'navigation',
       lower.includes('expo') && 'expo',
       lower.includes('ios') && 'ios',
       lower.includes('android') && 'android',
+      lower.includes('build') && 'build',
+      lower.includes('network') && 'network',
     ].filter(Boolean) as string[];
     setTriage({
       severity,
-      tags: tags.length ? tags : ['general'],
+      tags: (inferred.length ? inferred : ['general']).slice(0, 4),
       note:
         severity === 'high'
-          ? 'Looks urgent. Capture a minimal repro and a performance trace if possible.'
+          ? 'Looks urgent. Add exact error text, repro steps, device/OS, and recent changes.'
           : severity === 'medium'
-          ? 'Might be caching/state related. Try invalidation or memoization checks.'
-          : 'Start with a minimal repro and confirm expected behavior.',
+          ? 'Likely performance/state related. Try profiling, memoization, or cache invalidation.'
+          : 'Start with a minimal repro and expected vs actual behavior.',
     });
   };
 
-  const openModalPrefilled = () => {
-    setBlockerText(composeText);
-    setShowCreateModal(true);
-  };
+  const openModalPrefilled = () => { setBlockerText(composeText); setShowCreateModal(true); };
 
   const handleCreateBlocker = async () => {
-    if (!blockerText.trim()) {
-      Alert.alert('Missing details', 'Describe your blocker briefly.');
-      return;
-    }
-    if (!podId) {
-      Alert.alert('No pod', 'Join or create a pod first.');
-      return;
-    }
+    if (!blockerText.trim()) return Alert.alert('Missing details', 'Describe your blocker briefly.');
+    if (!podId || !authUid) return Alert.alert('No pod', 'Join or create a pod first.');
 
-    buttonScale.value = withSpring(0.95, { duration: 100 }, () => {
-      buttonScale.value = withSpring(1);
-    });
+    buttonScale.value = withSpring(0.95, { duration: 100 }, () => { buttonScale.value = withSpring(1); });
 
     try {
       setCreating(true);
       const title = blockerText.split('\n')[0].slice(0, 120) || 'New blocker';
       const description = blockerText.trim();
-      const inferred = (triage?.tags ?? []).map((t) => t.toLowerCase());
-      const tags = Array.from(new Set(inferred));
+      const tags = Array.from(new Set([...(triage?.tags ?? []), ...parseTags(description)])).slice(0, 8);
 
       const { data, error } = await supabase
         .from('blockers')
-        .insert([{ pod_id: podId, title, description, tags, status: 'open' }])
-        .select('id, pod_id, title, description, tags, status, created_at')
+        .insert([{
+          pod_id: podId,
+          title,
+          description,
+          tags,
+          status: 'open',
+          created_by: authUid,
+          user_id: authUid, 
+        }])
+        .select('id, pod_id, title, description, tags, status, created_at, created_by, helper_user_id')
         .single();
-
       if (error) throw error;
 
       setBlockers((prev) => [data as BlockerRow, ...prev]);
-
-      setShowCreateModal(false);
-      setBlockerText('');
-      setComposeText('');
-      setTriage(null);
+      setShowCreateModal(false); setBlockerText(''); setComposeText(''); setTriage(null);
     } catch (e: any) {
       console.error('create blocker', e);
       Alert.alert('Could not create blocker', e?.message ?? 'Unknown error');
-    } finally {
-      setCreating(false);
+    } finally { setCreating(false); }
+  };
+
+  const askToHelp = async (blocker: BlockerRow) => {
+    if (!podId || !authUid) return;
+    try {
+      const { error } = await supabase
+        .from('blocker_help_requests')
+        .insert([{ pod_id: podId, blocker_id: blocker.id, requester_user_id: authUid, status: 'pending' }]);
+      if (error && (error as any).code !== '23505') throw error; 
+      setMyHelp((m) => ({ ...m, [blocker.id]: 'pending' }));
+    } catch (e: any) {
+      console.error('askToHelp', e);
+      Alert.alert('Could not request', e?.message ?? 'Please try again.');
     }
   };
 
-  const markHelping = async (id: string) => {
+  const withdrawHelp = async (blocker: BlockerRow) => {
+    if (!podId || !authUid) return;
     try {
-      const { error } = await supabase.from('blockers').update({ status: 'helping' }).eq('id', id);
+      const { error } = await supabase
+        .from('blocker_help_requests')
+        .update({ status: 'withdrawn' })
+        .eq('pod_id', podId)
+        .eq('blocker_id', blocker.id)
+        .eq('requester_user_id', authUid)
+        .in('status', ['pending']); 
       if (error) throw error;
-      setBlockers((prev) => prev.map((b) => (b.id === id ? { ...b, status: 'helping' } : b)));
+      setMyHelp((m) => ({ ...m, [blocker.id]: 'withdrawn' }));
     } catch (e: any) {
-      console.error('update helping', e);
-      Alert.alert('Update failed', e?.message ?? 'Could not update blocker.');
+      console.error('withdrawHelp', e);
+      Alert.alert('Could not withdraw', e?.message ?? 'Please try again.');
+    }
+  };
+
+  const assignMe = async (blocker: BlockerRow) => {
+    if (!podId || !authUid) return;
+    try {
+      const { error } = await supabase
+        .from('blockers')
+        .update({ helper_user_id: authUid, status: 'helping' })
+        .eq('id', blocker.id)
+        .eq('pod_id', podId);
+      if (error) throw error;
+
+      await supabase
+        .from('blocker_help_requests')
+        .update({ status: 'accepted' })
+        .eq('pod_id', podId)
+        .eq('blocker_id', blocker.id)
+        .eq('requester_user_id', authUid)
+        .in('status', ['pending']);
+
+      setMyHelp((m) => ({ ...m, [blocker.id]: 'accepted' }));
+      setBlockers((prev) => prev.map((b) => (b.id === blocker.id ? { ...b, helper_user_id: authUid, status: 'helping' } : b)));
+    } catch (e: any) {
+      console.error('assignMe', e);
+      Alert.alert('Could not assign', e?.message ?? 'Please try again.');
     }
   };
 
   const resolve = async (id: string) => {
+    if (!podId) return;
     try {
-      const { error } = await supabase.from('blockers').update({ status: 'resolved' }).eq('id', id);
+      const { error } = await supabase.from('blockers').update({ status: 'resolved' }).eq('id', id).eq('pod_id', podId);
       if (error) throw error;
       setBlockers((prev) => prev.map((b) => (b.id === id ? { ...b, status: 'resolved' } : b)));
     } catch (e: any) {
@@ -278,22 +350,20 @@ export default function BlockersScreen() {
   };
 
   const filtered = useMemo(
-    () =>
-      blockers.filter((b) => {
-        if (statusFilter !== 'all' && b.status !== statusFilter) return false;
-        if (!q.trim()) return true;
-        const blob = (b.title + ' ' + (b.description ?? '') + ' ' + (b.tags ?? []).join(' ')).toLowerCase();
-        return blob.includes(q.toLowerCase());
-      }),
+    () => blockers.filter((b) => {
+      if (statusFilter !== 'all' && b.status !== statusFilter) return false;
+      if (!q.trim()) return true;
+      const blob = (b.title + ' ' + (b.description ?? '') + ' ' + (b.tags ?? []).join(' ')).toLowerCase();
+      return blob.includes(q.toLowerCase());
+    }),
     [blockers, statusFilter, q]
   );
 
-  const stats = useMemo(() => {
-    const open = blockers.filter((b) => b.status === 'open').length;
-    const helping = blockers.filter((b) => b.status === 'helping').length;
-    const resolved = blockers.filter((b) => b.status === 'resolved').length;
-    return { open, helping, resolved };
-  }, [blockers]);
+  const stats = useMemo(() => ({
+    open: blockers.filter((b) => b.status === 'open').length,
+    helping: blockers.filter((b) => b.status === 'helping').length,
+    resolved: blockers.filter((b) => b.status === 'resolved').length,
+  }), [blockers]);
 
   return (
     <View style={styles.container}>
@@ -312,29 +382,16 @@ export default function BlockersScreen() {
           </Animated.View>
 
           <View style={styles.statsStrip}>
-            <View style={[styles.statChip, { backgroundColor: '#2a1313' }]}>
-              <View style={[styles.dot, { backgroundColor: getStatusColor('open') }]} />
-              <Text style={styles.statChipText}>Open {stats.open}</Text>
-            </View>
-            <View style={[styles.statChip, { backgroundColor: '#211a0c' }]}>
-              <View style={[styles.dot, { backgroundColor: getStatusColor('helping') }]} />
-              <Text style={styles.statChipText}>Helping {stats.helping}</Text>
-            </View>
-            <View style={[styles.statChip, { backgroundColor: '#0f2118' }]}>
-              <View style={[styles.dot, { backgroundColor: getStatusColor('resolved') }]} />
-              <Text style={styles.statChipText}>Resolved {stats.resolved}</Text>
-            </View>
+            <View style={[styles.statChip, { backgroundColor: '#2a1313' }]}><View style={[styles.dot, { backgroundColor: getStatusColor('open') }]} /><Text style={styles.statChipText}>Open {stats.open}</Text></View>
+            <View style={[styles.statChip, { backgroundColor: '#211a0c' }]}><View style={[styles.dot, { backgroundColor: getStatusColor('helping') }]} /><Text style={styles.statChipText}>Helping {stats.helping}</Text></View>
+            <View style={[styles.statChip, { backgroundColor: '#0f2118' }]}><View style={[styles.dot, { backgroundColor: getStatusColor('resolved') }]} /><Text style={styles.statChipText}>Resolved {stats.resolved}</Text></View>
           </View>
 
           <BlurView intensity={20} style={styles.composerGlass}>
             <View style={styles.composerRow}>
               <TextInput
                 value={composeText}
-                onChangeText={(t) => {
-                  setComposeText(t);
-                  if (t.length > 2) runTriage(t);
-                  else setTriage(null);
-                }}
+                onChangeText={(t) => { setComposeText(t); if (t.length > 2) runTriage(t); else setTriage(null); }}
                 placeholder={podId ? "What's blocking you? (one line)" : 'Join a pod to raise blockers'}
                 placeholderTextColor="#888"
                 style={styles.composerInput}
@@ -342,46 +399,16 @@ export default function BlockersScreen() {
                 onSubmitEditing={() => (podId ? openModalPrefilled() : null)}
                 editable={!!podId}
               />
-              <TouchableOpacity style={styles.raiseBtn} onPress={openModalPrefilled} disabled={!podId}>
-                <Text style={styles.raiseBtnText}>Raise</Text>
-              </TouchableOpacity>
+              <TouchableOpacity style={styles.raiseBtn} onPress={openModalPrefilled} disabled={!podId}><Text style={styles.raiseBtnText}>Raise</Text></TouchableOpacity>
             </View>
-
             {triage && (
               <View style={styles.triageRow}>
-                <View style={[styles.sevPill, { borderColor: getSeverityColor(triage.severity) }]}>
-                  <Text style={[styles.sevPillText, { color: getSeverityColor(triage.severity) }]}>
-                    {triage.severity.toUpperCase()}
-                  </Text>
-                </View>
-                <View style={styles.triageTags}>
-                  {triage.tags.slice(0, 3).map((t) => (
-                    <View key={t} style={styles.triageTag}>
-                      <Text style={styles.triageTagText}>{t}</Text>
-                    </View>
-                  ))}
-                </View>
-                <Text style={styles.triageNote} numberOfLines={2}>
-                  {triage.note}
-                </Text>
+                <View style={[styles.sevPill, { borderColor: getSeverityColor(triage.severity) }]}><Text style={[styles.sevPillText, { color: getSeverityColor(triage.severity) }]}>{triage.severity.toUpperCase()}</Text></View>
+                <View style={styles.triageTags}>{triage.tags.slice(0, 3).map((t) => (<View key={t} style={styles.triageTag}><Text style={styles.triageTagText}>{t}</Text></View>))}</View>
+                <Text style={styles.triageNote} numberOfLines={2}>{triage.note}</Text>
               </View>
             )}
           </BlurView>
-
-          <View style={styles.filterBar}>
-            {(['all', 'open', 'helping', 'resolved'] as const).map((s) => (
-              <TouchableOpacity key={s} onPress={() => setStatusFilter(s)} style={[styles.seg, statusFilter === s && styles.segActive]}>
-                <Text style={[styles.segText, statusFilter === s && styles.segTextActive]}>{s[0].toUpperCase() + s.slice(1)}</Text>
-              </TouchableOpacity>
-            ))}
-            <TextInput
-              value={q}
-              onChangeText={setQ}
-              placeholder="Search"
-              placeholderTextColor="#888"
-              style={styles.search}
-            />
-          </View>
 
           {!loading && filtered.length === 0 && (
             <Text style={{ color: '#888', textAlign: 'center', marginTop: 30 }}>
@@ -389,83 +416,89 @@ export default function BlockersScreen() {
             </Text>
           )}
 
-          {filtered.map((blocker, index) => (
-            <Animated.View key={blocker.id} entering={FadeInDown.delay(300 + index * 100).springify()} style={styles.cardContainer}>
-              <BlurView intensity={20} style={styles.cardGlass}>
-                <View style={styles.blockerCard}>
-                  <View style={styles.blockerHeader}>
-                    <View style={styles.statusRow}>
-                      <View style={[styles.statusDot, { backgroundColor: getStatusColor(blocker.status) }]} />
-                      <Text style={styles.statusText}>
-                        {blocker.status === 'open' && 'Open'}
-                        {blocker.status === 'helping' && 'Being helped'}
-                        {blocker.status === 'resolved' && 'Resolved'}
-                      </Text>
-                    </View>
-                    <View style={styles.timeRow}>
-                      <Clock color="#666666" size={14} />
-                      <Text style={styles.timestamp}>{timeAgo(blocker.created_at)}</Text>
-                    </View>
-                  </View>
+          {filtered.map((b, i) => {
+            const myReq = myHelp[b.id]; 
+            const iAmHelper = authUid && b.helper_user_id === authUid;
+            const canAsk = b.status !== 'resolved' && !iAmHelper && myReq !== 'pending' && myReq !== 'accepted';
 
-                  <View style={styles.metaRow} />
-
-                  <Text style={styles.blockerTitle}>{blocker.title}</Text>
-                  {!!blocker.description && <Text style={styles.blockerDescription}>{blocker.description}</Text>}
-
-                  {blocker.status === 'open' && (
-                    <View style={styles.aiHint}>
-                      <Lightbulb size={14} color="#ffd966" />
-                      <Text style={styles.aiHintText}>
-                        Tip: Add a minimal repro and expected/actual behavior to speed up help.
-                      </Text>
-                    </View>
-                  )}
-
-                  <View style={styles.tagsContainer}>
-                    {(blocker.tags ?? []).map((tag, tagIndex) => (
-                      <View key={`${blocker.id}-${tag}-${tagIndex}`} style={styles.tag}>
-                        <Text style={styles.tagText}>#{tag}</Text>
+            return (
+              <Animated.View key={b.id} entering={FadeInDown.delay(300 + i * 100).springify()} style={styles.cardContainer}>
+                <BlurView intensity={20} style={styles.cardGlass}>
+                  <View style={styles.blockerCard}>
+                    <View style={styles.blockerHeader}>
+                      <View style={styles.statusRow}>
+                        <View style={[styles.statusDot, { backgroundColor: getStatusColor(b.status) }]} />
+                        <Text style={styles.statusText}>
+                          {b.status === 'open' && 'Open'}
+                          {b.status === 'helping' && 'Being helped'}
+                          {b.status === 'resolved' && 'Resolved'}
+                          {iAmHelper && ' • You'}
+                        </Text>
                       </View>
-                    ))}
-                  </View>
+                      <View style={styles.timeRow}>
+                        <Clock color="#666666" size={14} />
+                        <Text style={styles.timestamp}>{timeAgo(b.created_at)}</Text>
+                      </View>
+                    </View>
 
-                  <View style={styles.cardFooter}>
-                    <TouchableOpacity style={styles.footerBtnPrimary}>
-                      <MessageSquare size={16} color="#000" />
-                      <Text style={styles.footerBtnPrimaryText}>Ask to help</Text>
-                    </TouchableOpacity>
-                    {blocker.status !== 'helping' && blocker.status !== 'resolved' && (
-                      <TouchableOpacity style={styles.footerBtnSecondary} onPress={() => markHelping(blocker.id)}>
-                        <Text style={styles.footerBtnSecondaryText}>Mark helping</Text>
-                      </TouchableOpacity>
+                    <Text style={styles.blockerTitle}>{b.title}</Text>
+                    {!!b.description && <Text style={styles.blockerDescription}>{b.description}</Text>}
+
+                    {b.status === 'open' && (
+                      <View style={styles.aiHint}>
+                        <Lightbulb size={14} color="#ffd966" />
+                        <Text style={styles.aiHintText}>Tip: Add a minimal repro and expected/actual behavior to speed up help.</Text>
+                      </View>
                     )}
-                    {blocker.status !== 'resolved' && (
-                      <TouchableOpacity style={styles.footerBtnDanger} onPress={() => resolve(blocker.id)}>
-                        <Text style={styles.footerBtnDangerText}>Resolve</Text>
-                      </TouchableOpacity>
-                    )}
+
+                    <View style={styles.tagsContainer}>
+                      {(b.tags ?? []).map((tag, idx) => (
+                        <View key={`${b.id}-${tag}-${idx}`} style={styles.tag}><Text style={styles.tagText}>#{tag}</Text></View>
+                      ))}
+                    </View>
+
+                    <View style={styles.cardFooter}>
+                      {iAmHelper ? (
+                        <View style={styles.footerBtnPrimary}><MessageSquare size={16} color="#000" /><Text style={styles.footerBtnPrimaryText}>You’re helping</Text></View>
+                      ) : canAsk ? (
+                        <TouchableOpacity style={styles.footerBtnPrimary} onPress={() => askToHelp(b)}>
+                          <MessageSquare size={16} color="#000" /><Text style={styles.footerBtnPrimaryText}>Ask to help</Text>
+                        </TouchableOpacity>
+                      ) : myReq === 'pending' ? (
+                        <TouchableOpacity style={styles.footerBtnPrimary} onPress={() => withdrawHelp(b)}>
+                          <MessageSquare size={16} color="#000" /><Text style={styles.footerBtnPrimaryText}>Requested (tap to withdraw)</Text>
+                        </TouchableOpacity>
+                      ) : (
+                        <View style={[styles.footerBtnPrimary, { opacity: 0.65 }]}><MessageSquare size={16} color="#000" /><Text style={styles.footerBtnPrimaryText}>Ask to help</Text></View>
+                      )}
+
+                      {b.status !== 'helping' && b.status !== 'resolved' && (
+                        <TouchableOpacity style={styles.footerBtnSecondary} onPress={() => assignMe(b)}>
+                          <Text style={styles.footerBtnSecondaryText}>Assign me</Text>
+                        </TouchableOpacity>
+                      )}
+
+                      {b.status !== 'resolved' && (
+                        <TouchableOpacity style={styles.footerBtnDanger} onPress={() => resolve(b.id)}>
+                          <Text style={styles.footerBtnDangerText}>Resolve</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
                   </View>
-                </View>
-              </BlurView>
-            </Animated.View>
-          ))}
+                </BlurView>
+              </Animated.View>
+            );
+          })}
         </ScrollView>
 
-        {/* Create modal */}
         <Modal visible={showCreateModal} transparent animationType="none" onRequestClose={() => setShowCreateModal(false)}>
           <BlurView intensity={40} style={styles.modalOverlay}>
             <Animated.View entering={FadeInUp.springify()} style={styles.modalContainer}>
               <BlurView intensity={30} style={styles.modalGlass}>
                 <View style={styles.modal}>
                   <View style={styles.modalHeader}>
-                    <View style={styles.modalTitleRow}>
-                      <Lightbulb color="#ffffff" size={20} />
-                      <Text style={styles.modalTitle}>Describe Your Blocker</Text>
-                    </View>
-                    <TouchableOpacity style={styles.closeButton} onPress={() => setShowCreateModal(false)}>
-                      <X color="#ffffff" size={20} />
-                    </TouchableOpacity>
+                    <View style={styles.modalTitleRow}><Lightbulb color="#ffffff" size={20} /><Text style={styles.modalTitle}>Describe Your Blocker</Text></View>
+                    <TouchableOpacity style={styles.closeButton} onPress={() => setShowCreateModal(false)}><X color="#ffffff" size={20} /></TouchableOpacity>
                   </View>
 
                   <TextInput
@@ -473,33 +506,19 @@ export default function BlockersScreen() {
                     placeholder="What's blocking you? Be specific about the tech stack, error messages, or concept…"
                     placeholderTextColor="#666666"
                     value={blockerText}
-                    onChangeText={(t) => {
-                      setBlockerText(t);
-                      if (t.length > 2) runTriage(t);
-                      else setTriage(null);
-                    }}
-                    multiline
-                    numberOfLines={6}
-                    textAlignVertical="top"
-                    editable={!creating}
+                    onChangeText={(t) => { setBlockerText(t); if (t.length > 2) runTriage(t); else setTriage(null); }}
+                    multiline numberOfLines={6} textAlignVertical="top" editable={!creating}
                   />
 
                   {triage && (
                     <View style={[styles.aiHint, { marginTop: 0, marginBottom: 16 }]}>
-                      <Lightbulb size={14} color="#ffd966" />
-                      <Text style={styles.aiHintText}>{triage.note}</Text>
+                      <Lightbulb size={14} color="#ffd966" /><Text style={styles.aiHintText}>{triage.note}</Text>
                     </View>
                   )}
 
                   <Animated.View style={buttonAnimatedStyle}>
-                    <TouchableOpacity
-                      style={[styles.createButton, creating && { opacity: 0.85 }]}
-                      onPress={handleCreateBlocker}
-                      activeOpacity={0.8}
-                      disabled={creating}
-                    >
-                      <Send color="#000000" size={18} />
-                      <Text style={styles.createButtonText}>{creating ? 'Creating…' : 'Find Helpers'}</Text>
+                    <TouchableOpacity style={[styles.createButton, creating && { opacity: 0.85 }]} onPress={handleCreateBlocker} activeOpacity={0.8} disabled={creating}>
+                      <Send color="#000000" size={18} /><Text style={styles.createButtonText}>{creating ? 'Creating…' : 'Find Helpers'}</Text>
                     </TouchableOpacity>
                   </Animated.View>
                 </View>
@@ -513,20 +532,14 @@ export default function BlockersScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  gradient: { flex: 1 },
-  scrollView: { flex: 1 },
+  container: { flex: 1 }, gradient: { flex: 1 }, scrollView: { flex: 1 },
   scrollContent: { paddingTop: 60, paddingHorizontal: 20, paddingBottom: 120 },
-
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   title: { fontSize: 28, fontFamily: 'Inter-SemiBold', color: '#ffffff' },
   addButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#ffffff', justifyContent: 'center', alignItems: 'center' },
-
   statsStrip: { flexDirection: 'row', gap: 8 as any, marginBottom: 12 },
   statChip: { flexDirection: 'row', alignItems: 'center', gap: 6 as any, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' },
-  statChipText: { color: '#fff', fontFamily: 'Inter-Medium', fontSize: 12 },
-  dot: { width: 8, height: 8, borderRadius: 4 },
-
+  statChipText: { color: '#fff', fontFamily: 'Inter-Medium', fontSize: 12 }, dot: { width: 8, height: 8, borderRadius: 4 },
   composerGlass: { borderRadius: 16, overflow: 'hidden', backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', padding: 12, marginBottom: 14 },
   composerRow: { flexDirection: 'row', alignItems: 'center', gap: 8 as any },
   composerInput: { flex: 1, backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, color: '#fff', fontFamily: 'Inter-Regular' },
@@ -539,14 +552,6 @@ const styles = StyleSheet.create({
   triageTag: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' },
   triageTagText: { color: '#ddd', fontSize: 10 },
   triageNote: { color: '#cfcfcf', fontSize: 12, lineHeight: 18 },
-
-  filterBar: { flexDirection: 'row', alignItems: 'center', gap: 8 as any, marginBottom: 12 },
-  seg: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' },
-  segActive: { backgroundColor: 'rgba(255,255,255,0.14)' },
-  segText: { color: '#bbb', fontFamily: 'Inter-Medium', fontSize: 12 },
-  segTextActive: { color: '#fff' },
-  search: { marginLeft: 'auto', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', color: '#fff', minWidth: 110 },
-
   cardContainer: { marginBottom: 20 },
   cardGlass: { borderRadius: 20, overflow: 'hidden', backgroundColor: 'rgba(255, 255, 255, 0.05)', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.1)' },
   blockerCard: { padding: 20 },
@@ -556,35 +561,13 @@ const styles = StyleSheet.create({
   statusText: { fontSize: 12, fontFamily: 'Inter-Medium', color: '#ffffff' },
   timeRow: { flexDirection: 'row', alignItems: 'center' },
   timestamp: { fontSize: 12, fontFamily: 'Inter-Regular', color: '#666666', marginLeft: 4 },
-
-  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 8 as any, marginBottom: 8 },
-  fileChip: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
-  fileChipText: { color: '#ddd', fontSize: 10 },
-
   blockerTitle: { fontSize: 16, fontFamily: 'Inter-SemiBold', color: '#ffffff', marginBottom: 8 },
   blockerDescription: { fontSize: 14, fontFamily: 'Inter-Regular', color: '#cccccc', lineHeight: 20, marginBottom: 12 },
-
   aiHint: { flexDirection: 'row', gap: 8 as any, alignItems: 'flex-start', backgroundColor: 'rgba(255,217,102,0.08)', borderRadius: 12, padding: 10, borderWidth: 1, borderColor: 'rgba(255,217,102,0.25)', marginBottom: 12 },
   aiHintText: { color: '#f5f0dc', flex: 1, fontSize: 12, lineHeight: 18 },
-
   tagsContainer: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 16 },
   tag: { backgroundColor: 'rgba(255, 255, 255, 0.1)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, marginRight: 8, marginBottom: 4 },
   tagText: { fontSize: 10, fontFamily: 'Inter-Medium', color: '#ffffff' },
-
-  helpersSection: { borderTopWidth: 1, borderTopColor: 'rgba(255, 255, 255, 0.1)', paddingTop: 16 },
-  helpersTitle: { fontSize: 14, fontFamily: 'Inter-SemiBold', color: '#ffffff', marginBottom: 12 },
-  helperRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8 },
-  helperInfo: { flexDirection: 'row', alignItems: 'center', flex: 1 },
-  helperAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
-  helperInitial: { fontSize: 12, fontFamily: 'Inter-SemiBold', color: '#ffffff' },
-  helperDetails: { flex: 1 },
-  helperName: { fontSize: 14, fontFamily: 'Inter-Medium', color: '#ffffff', marginBottom: 2 },
-  helperMeta: { flexDirection: 'row', alignItems: 'center' },
-  levelBadgeSmall: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, marginRight: 8 },
-  levelTextSmall: { fontSize: 8, fontFamily: 'Inter-SemiBold' },
-  matchPercent: { fontSize: 10, fontFamily: 'Inter-Regular', color: '#999999' },
-  helpButton: { width: 32, height: 32, borderRadius: 16, backgroundColor: 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center' },
-
   cardFooter: { marginTop: 10, paddingTop: 12, borderTopWidth: 1, borderColor: 'rgba(255,255,255,0.08)', flexDirection: 'row', gap: 8 as any },
   footerBtnPrimary: { flex: 1, backgroundColor: '#fff', borderRadius: 12, paddingVertical: 10, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 6 as any },
   footerBtnPrimaryText: { color: '#000', fontWeight: '700' },
@@ -592,7 +575,6 @@ const styles = StyleSheet.create({
   footerBtnSecondaryText: { color: '#fff', fontWeight: '700' },
   footerBtnDanger: { flexBasis: 96, borderRadius: 12, backgroundColor: '#ffdbdb', alignItems: 'center', justifyContent: 'center', paddingVertical: 10 },
   footerBtnDangerText: { color: '#111', fontWeight: '800' },
-
   modalOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0, 0, 0, 0.5)' },
   modalContainer: { width: width - 40, maxHeight: height * 0.8 },
   modalGlass: { borderRadius: 24, overflow: 'hidden', backgroundColor: 'rgba(0, 0, 0, 0.8)', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.2)' },
