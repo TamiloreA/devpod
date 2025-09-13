@@ -6,7 +6,7 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import Animated, { FadeInDown, FadeInUp, useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
-import { Plus, Clock, X, Send, Lightbulb, MessageSquare } from 'lucide-react-native';
+import { Plus, Clock, X, Send, Lightbulb, MessageSquare, UserPlus } from 'lucide-react-native';
 import { supabase } from '@/lib/supabase';
 import { useLocalSearchParams } from 'expo-router';
 
@@ -50,7 +50,7 @@ type BlockerRow = {
   tags: string[] | null;
   status: 'open' | 'helping' | 'resolved';
   created_at: string;
-  created_by: string | null;
+  user_id: string | null; 
   helper_user_id: string | null;
 };
 
@@ -63,6 +63,23 @@ type HelpReq = {
   created_at: string;
 };
 
+type HelpInvite = {
+  id: string;
+  pod_id: string;
+  blocker_id: string;
+  inviter_user_id: string; 
+  target_user_id: string;  
+  status: 'pending' | 'accepted' | 'declined' | 'revoked';
+  created_at: string;
+};
+
+type MemberProfile = {
+  id: string;
+  name: string;
+  level: string | null;
+  tags: string[]; 
+};
+
 export default function BlockersScreen() {
   const params = useLocalSearchParams<{ raise?: string }>();
 
@@ -72,6 +89,9 @@ export default function BlockersScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [blockers, setBlockers] = useState<BlockerRow[]>([]);
+
+  const [members, setMembers] = useState<MemberProfile[]>([]);
+  const [invitesByBlocker, setInvitesByBlocker] = useState<Record<string, Record<string, HelpInvite['status']>>>({});
 
   const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'helping' | 'resolved'>('all');
   const [q, setQ] = useState('');
@@ -83,8 +103,13 @@ export default function BlockersScreen() {
   const [blockerText, setBlockerText] = useState('');
   const [creating, setCreating] = useState(false);
 
+  const [askModalOpen, setAskModalOpen] = useState(false);
+  const [askBlocker, setAskBlocker] = useState<BlockerRow | null>(null);
+  const [helpSearch, setHelpSearch] = useState('');
+
   const rtBlockersRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const rtHelpRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const rtInviteRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
   const [myHelp, setMyHelp] = useState<Record<string, HelpReq['status']>>({});
 
@@ -113,11 +138,17 @@ export default function BlockersScreen() {
         setPodId(p);
 
         if (p) {
-          await loadBlockers(p);
-          await loadMyHelpRequests(p, uid);
+          await Promise.all([
+            loadBlockers(p),
+            loadMyHelpRequests(p, uid),
+            loadMembers(p, uid),
+          ]);
+          await preloadInvitesForBlockers(p, uid);
         } else {
           setBlockers([]);
           setMyHelp({});
+          setMembers([]);
+          setInvitesByBlocker({});
         }
       } catch (e: any) {
         console.error('blockers.init', e);
@@ -164,7 +195,7 @@ export default function BlockersScreen() {
       .channel(`rt-bhr:${podId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'blocker_help_requests', filter: `pod_id=eq.${podId}` }, (payload) => {
         const row = (payload.new ?? payload.old) as HelpReq;
-        if (!row || row.requester_user_id !== authUid) return;
+        if (!row || row.requester_user_id !== authUid) return; 
         setMyHelp((prev) => {
           const next = { ...prev };
           if (payload.eventType === 'DELETE') {
@@ -180,10 +211,38 @@ export default function BlockersScreen() {
     return () => { ch.unsubscribe(); rtHelpRef.current = null; };
   }, [podId, authUid]);
 
+  useEffect(() => {
+    if (!podId || !authUid) return;
+    if (rtInviteRef.current) { rtInviteRef.current.unsubscribe(); rtInviteRef.current = null; }
+
+    const ch = supabase
+      .channel(`rt-bhi:${podId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'blocker_help_invites', filter: `pod_id=eq.${podId}` }, (payload) => {
+        const row = (payload.new ?? payload.old) as HelpInvite;
+        if (!row) return;
+        if (row.inviter_user_id === authUid || row.target_user_id === authUid) {
+          setInvitesByBlocker((prev) => {
+            const copy = { ...prev };
+            const m = { ...(copy[row.blocker_id] ?? {}) };
+            if (payload.eventType === 'DELETE') {
+              delete m[row.target_user_id];
+            } else {
+              m[row.target_user_id] = (payload.new as HelpInvite)?.status ?? m[row.target_user_id];
+            }
+            copy[row.blocker_id] = m;
+            return copy;
+          });
+        }
+      })
+      .subscribe();
+    rtInviteRef.current = ch;
+    return () => { ch.unsubscribe(); rtInviteRef.current = null; };
+  }, [podId, authUid]);
+
   const loadBlockers = useCallback(async (p: string) => {
     const { data, error } = await supabase
       .from('blockers')
-      .select('id, pod_id, title, description, tags, status, created_at, created_by, helper_user_id')
+      .select('id, pod_id, title, description, tags, status, created_at, user_id, helper_user_id')
       .eq('pod_id', p)
       .order('created_at', { ascending: false });
     if (error) throw error;
@@ -202,17 +261,63 @@ export default function BlockersScreen() {
     setMyHelp(m);
   }, []);
 
+  const loadMembers = useCallback(async (p: string, _uid: string) => {
+    const { data: ids, error: idsErr } = await supabase
+      .from('pod_members')
+      .select('user_id')
+      .eq('pod_id', p);
+    if (idsErr) { console.error('members ids error', idsErr); return; }
+    const userIds = (ids ?? []).map((r: any) => r.user_id).filter(Boolean);
+    if (!userIds.length) { setMembers([]); return; }
+
+    const { data: profs, error: pErr } = await supabase
+      .from('profiles')
+      .select('id, display_name, level, skills')
+      .in('id', userIds);
+    if (pErr) { console.error('profiles error', pErr); setMembers([]); return; }
+
+    const mapped: MemberProfile[] = (profs ?? []).map((p: any) => ({
+      id: p.id,
+      name: p.display_name ?? 'Member',
+      level: p.level ?? null,
+      tags: Array.isArray(p?.skills) ? p.skills.map((x: any) => String(x).trim().toLowerCase()).filter(Boolean) : [],
+    }));
+
+    setMembers(mapped);
+  }, []);
+
+  const preloadInvitesForBlockers = useCallback(async (p: string, uid: string) => {
+    const { data, error } = await supabase
+      .from('blocker_help_invites')
+      .select('blocker_id, target_user_id, inviter_user_id, status')
+      .eq('pod_id', p)
+      .or(`inviter_user_id.eq.${uid},target_user_id.eq.${uid}`);
+    if (error) { console.error('preload invites error', error); return; }
+
+    const byB: Record<string, Record<string, HelpInvite['status']>> = {};
+    (data ?? []).forEach((row: any) => {
+      if (!byB[row.blocker_id]) byB[row.blocker_id] = {};
+      byB[row.blocker_id][row.target_user_id] = row.status;
+    });
+    setInvitesByBlocker(byB);
+  }, []);
+
   const onRefresh = useCallback(async () => {
     if (!podId || !authUid) return;
     try {
       setRefreshing(true);
-      await Promise.all([loadBlockers(podId), loadMyHelpRequests(podId, authUid)]);
+      await Promise.all([
+        loadBlockers(podId),
+        loadMyHelpRequests(podId, authUid),
+        loadMembers(podId, authUid),
+        preloadInvitesForBlockers(podId, authUid),
+      ]);
     } catch (e: any) {
       console.error('blockers.refresh', e);
     } finally {
       setRefreshing(false);
     }
-  }, [podId, authUid, loadBlockers, loadMyHelpRequests]);
+  }, [podId, authUid, loadBlockers, loadMyHelpRequests, loadMembers, preloadInvitesForBlockers]);
 
   const runTriage = (text: string) => {
     const lower = text.toLowerCase();
@@ -258,16 +363,8 @@ export default function BlockersScreen() {
 
       const { data, error } = await supabase
         .from('blockers')
-        .insert([{
-          pod_id: podId,
-          title,
-          description,
-          tags,
-          status: 'open',
-          created_by: authUid,
-          user_id: authUid, 
-        }])
-        .select('id, pod_id, title, description, tags, status, created_at, created_by, helper_user_id')
+        .insert([{ pod_id: podId, title, description, tags, status: 'open', user_id: authUid }])
+        .select('id, pod_id, title, description, tags, status, created_at, user_id, helper_user_id')
         .single();
       if (error) throw error;
 
@@ -302,7 +399,7 @@ export default function BlockersScreen() {
         .eq('pod_id', podId)
         .eq('blocker_id', blocker.id)
         .eq('requester_user_id', authUid)
-        .in('status', ['pending']); 
+        .in('status', ['pending']);
       if (error) throw error;
       setMyHelp((m) => ({ ...m, [blocker.id]: 'withdrawn' }));
     } catch (e: any) {
@@ -337,6 +434,62 @@ export default function BlockersScreen() {
     }
   };
 
+  const openAskForHelp = async (blocker: BlockerRow) => {
+    setAskBlocker(blocker);
+    setHelpSearch('');
+    setAskModalOpen(true);
+    try {
+      const { data, error } = await supabase
+        .from('blocker_help_invites')
+        .select('target_user_id, status')
+        .eq('pod_id', blocker.pod_id)
+        .eq('blocker_id', blocker.id);
+      if (!error) {
+        const m: Record<string, HelpInvite['status']> = {};
+        (data ?? []).forEach((r: any) => { m[r.target_user_id] = r.status; });
+        setInvitesByBlocker((prev) => ({ ...prev, [blocker.id]: m }));
+      }
+    } catch {
+    }
+  };
+
+  const inviteHelper = async (blocker: BlockerRow, userId: string) => {
+    if (!podId || !authUid) return;
+    try {
+      const { error } = await supabase
+        .from('blocker_help_invites')
+        .insert([{ pod_id: podId, blocker_id: blocker.id, inviter_user_id: authUid, target_user_id: userId, status: 'pending' }]);
+      if (error && (error as any).code !== '23505') throw error; 
+      setInvitesByBlocker((prev) => {
+        const copy = { ...prev };
+        const m = { ...(copy[blocker.id] ?? {}) };
+        m[userId] = 'pending';
+        copy[blocker.id] = m;
+        return copy;
+      });
+    } catch (e: any) {
+      console.error('inviteHelper', e);
+      Alert.alert('Could not send invite', e?.message ?? 'Please try again.');
+    }
+  };
+
+  const suggestions = useMemo(() => {
+    if (!askBlocker) return [] as { member: MemberProfile; score: number; overlap: number }[];
+    const me = authUid;
+    const wants = new Set((askBlocker.tags ?? []).map((t) => String(t).toLowerCase()));
+    const scored = members
+      .filter((m) => m.id !== me) 
+      .map((m) => {
+        const overlap = m.tags.filter((t) => wants.has(t)).length;
+        const denom = Math.max(1, wants.size);
+        const score = overlap / denom; 
+        return { member: m, score, overlap };
+      })
+      .filter((x) => x.overlap > 0)
+      .sort((a, b) => (b.score - a.score) || (a.member.name || '').localeCompare(b.member.name || ''));
+    return scored;
+  }, [askBlocker, members, authUid]);
+
   const resolve = async (id: string) => {
     if (!podId) return;
     try {
@@ -364,6 +517,18 @@ export default function BlockersScreen() {
     helping: blockers.filter((b) => b.status === 'helping').length,
     resolved: blockers.filter((b) => b.status === 'resolved').length,
   }), [blockers]);
+
+  const searchResults = useMemo(() => {
+    if (!askBlocker) return [];
+    const me = authUid;
+    const q = helpSearch.trim().toLowerCase();
+    const list = members.filter((m) => m.id !== me);
+    if (!q) return suggestions.length ? [] : list; 
+    return list.filter((m) =>
+      (m.name || '').toLowerCase().includes(q) ||
+      m.tags.some((t) => t.includes(q))
+    );
+  }, [members, authUid, helpSearch, suggestions.length, askBlocker]);
 
   return (
     <View style={styles.container}>
@@ -417,9 +582,10 @@ export default function BlockersScreen() {
           )}
 
           {filtered.map((b, i) => {
-            const myReq = myHelp[b.id]; 
+            const owner = authUid && b.user_id === authUid;
+            const myReq = myHelp[b.id];
             const iAmHelper = authUid && b.helper_user_id === authUid;
-            const canAsk = b.status !== 'resolved' && !iAmHelper && myReq !== 'pending' && myReq !== 'accepted';
+            const canVolunteer = !owner && b.status !== 'resolved' && !iAmHelper && myReq !== 'pending' && myReq !== 'accepted';
 
             return (
               <Animated.View key={b.id} entering={FadeInDown.delay(300 + i * 100).springify()} style={styles.cardContainer}>
@@ -458,9 +624,13 @@ export default function BlockersScreen() {
                     </View>
 
                     <View style={styles.cardFooter}>
-                      {iAmHelper ? (
+                      {owner ? (
+                        <TouchableOpacity style={styles.footerBtnPrimary} onPress={() => openAskForHelp(b)}>
+                          <UserPlus size={16} color="#000" /><Text style={styles.footerBtnPrimaryText}>Ask for help</Text>
+                        </TouchableOpacity>
+                      ) : iAmHelper ? (
                         <View style={styles.footerBtnPrimary}><MessageSquare size={16} color="#000" /><Text style={styles.footerBtnPrimaryText}>You’re helping</Text></View>
-                      ) : canAsk ? (
+                      ) : canVolunteer ? (
                         <TouchableOpacity style={styles.footerBtnPrimary} onPress={() => askToHelp(b)}>
                           <MessageSquare size={16} color="#000" /><Text style={styles.footerBtnPrimaryText}>Ask to help</Text>
                         </TouchableOpacity>
@@ -472,7 +642,7 @@ export default function BlockersScreen() {
                         <View style={[styles.footerBtnPrimary, { opacity: 0.65 }]}><MessageSquare size={16} color="#000" /><Text style={styles.footerBtnPrimaryText}>Ask to help</Text></View>
                       )}
 
-                      {b.status !== 'helping' && b.status !== 'resolved' && (
+                      {!owner && b.status !== 'helping' && b.status !== 'resolved' && (
                         <TouchableOpacity style={styles.footerBtnSecondary} onPress={() => assignMe(b)}>
                           <Text style={styles.footerBtnSecondaryText}>Assign me</Text>
                         </TouchableOpacity>
@@ -526,6 +696,101 @@ export default function BlockersScreen() {
             </Animated.View>
           </BlurView>
         </Modal>
+
+        <Modal visible={askModalOpen} transparent animationType="fade" onRequestClose={() => setAskModalOpen(false)}>
+          <View style={styles.modalOverlay}>
+            <View style={[styles.modalContainer, { width: width - 40, maxHeight: height * 0.78 }]}>
+              <BlurView intensity={30} style={styles.modalGlass}>
+                <View style={styles.modal}>
+                  <View style={styles.modalHeader}>
+                    <View style={styles.modalTitleRow}><UserPlus color="#ffffff" size={20} /><Text style={styles.modalTitle}>Ask for help</Text></View>
+                    <TouchableOpacity style={styles.closeButton} onPress={() => setAskModalOpen(false)}><X color="#ffffff" size={20} /></TouchableOpacity>
+                  </View>
+
+                  <Text style={{ color: '#bbb', marginBottom: 8 }}>
+                    {(askBlocker?.tags ?? []).length ? `Suggesting based on: #${(askBlocker?.tags ?? []).join(' #')}` : 'People in your pod'}
+                  </Text>
+
+                  {suggestions.length > 0 && (
+                    <ScrollView style={{ maxHeight: height * 0.34 }}>
+                      {suggestions.map(({ member, score }) => {
+                        const already = (invitesByBlocker[askBlocker?.id ?? ''] ?? {})[member.id];
+                        return (
+                          <View key={member.id} style={styles.helperRow}>
+                            <View style={styles.helperInfo}>
+                              <View style={styles.helperAvatar}><Text style={styles.helperInitial}>{(member.name ?? 'U')[0]?.toUpperCase() ?? 'U'}</Text></View>
+                              <View style={styles.helperDetails}>
+                                <Text style={styles.helperName}>{member.name}</Text>
+                                <View style={styles.helperMeta}>
+                                  <View style={[styles.levelBadgeSmall, { backgroundColor: 'rgba(255,255,255,0.08)' }]}><Text style={styles.levelTextSmall}>{member.level ?? 'Member'}</Text></View>
+                                  <Text style={styles.matchPercent}>{Math.round(score * 100)}% match</Text>
+                                </View>
+                              </View>
+                            </View>
+
+                            {already ? (
+                              <View style={[styles.invBtnSecondary, { paddingHorizontal: 10 }]}><Text style={styles.invBtnSecondaryText}>{already === 'pending' ? 'Invited' : already}</Text></View>
+                            ) : (
+                              <TouchableOpacity
+                                style={[styles.invBtnPrimary, { paddingHorizontal: 12 }]}
+                                onPress={() => askBlocker && inviteHelper(askBlocker, member.id)}
+                              >
+                                <Text style={styles.invBtnPrimaryText}>Invite</Text>
+                              </TouchableOpacity>
+                            )}
+                          </View>
+                        );
+                      })}
+                    </ScrollView>
+                  )}
+
+                  <TextInput
+                    value={helpSearch}
+                    onChangeText={setHelpSearch}
+                    placeholder="Search by name or skill (e.g. react, nav, ios)…"
+                    placeholderTextColor="#888"
+                    style={styles.searchInput}
+                  />
+
+                  <ScrollView style={{ maxHeight: height * 0.34, marginTop: 8 }}>
+                    {searchResults.map((m) => {
+                      const already = (invitesByBlocker[askBlocker?.id ?? ''] ?? {})[m.id];
+                      return (
+                        <View key={m.id} style={styles.helperRow}>
+                          <View style={styles.helperInfo}>
+                            <View style={styles.helperAvatar}><Text style={styles.helperInitial}>{(m.name ?? 'U')[0]?.toUpperCase() ?? 'U'}</Text></View>
+                            <View style={styles.helperDetails}>
+                              <Text style={styles.helperName}>{m.name}</Text>
+                              {!!m.tags?.length && (
+                                <Text style={{ color: '#9aa0a6', fontSize: 11 }} numberOfLines={1}>
+                                  {m.tags.slice(0, 5).map((t) => `#${t}`).join(' ')}
+                                </Text>
+                              )}
+                            </View>
+                          </View>
+
+                          {already ? (
+                            <View style={[styles.invBtnSecondary, { paddingHorizontal: 10 }]}><Text style={styles.invBtnSecondaryText}>{already === 'pending' ? 'Invited' : already}</Text></View>
+                          ) : (
+                            <TouchableOpacity
+                              style={[styles.invBtnPrimary, { paddingHorizontal: 12 }]}
+                              onPress={() => askBlocker && inviteHelper(askBlocker, m.id)}
+                            >
+                              <Text style={styles.invBtnPrimaryText}>Invite</Text>
+                            </TouchableOpacity>
+                          )}
+                        </View>
+                      );
+                    })}
+                    {searchResults.length === 0 && (
+                      <Text style={{ color: '#888', textAlign: 'center', marginTop: 8 }}>No matches. Try another name or skill.</Text>
+                    )}
+                  </ScrollView>
+                </View>
+              </BlurView>
+            </View>
+          </View>
+        </Modal>
       </LinearGradient>
     </View>
   );
@@ -537,14 +802,17 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   title: { fontSize: 28, fontFamily: 'Inter-SemiBold', color: '#ffffff' },
   addButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#ffffff', justifyContent: 'center', alignItems: 'center' },
+
   statsStrip: { flexDirection: 'row', gap: 8 as any, marginBottom: 12 },
   statChip: { flexDirection: 'row', alignItems: 'center', gap: 6 as any, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' },
   statChipText: { color: '#fff', fontFamily: 'Inter-Medium', fontSize: 12 }, dot: { width: 8, height: 8, borderRadius: 4 },
+
   composerGlass: { borderRadius: 16, overflow: 'hidden', backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', padding: 12, marginBottom: 14 },
   composerRow: { flexDirection: 'row', alignItems: 'center', gap: 8 as any },
   composerInput: { flex: 1, backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, color: '#fff', fontFamily: 'Inter-Regular' },
   raiseBtn: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12, backgroundColor: '#ffffff' },
   raiseBtnText: { color: '#000', fontWeight: '700' },
+
   triageRow: { marginTop: 10 },
   sevPill: { alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999, borderWidth: 1, marginBottom: 8 },
   sevPillText: { fontFamily: 'Inter-SemiBold', fontSize: 10, letterSpacing: 0.4 },
@@ -552,6 +820,7 @@ const styles = StyleSheet.create({
   triageTag: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' },
   triageTagText: { color: '#ddd', fontSize: 10 },
   triageNote: { color: '#cfcfcf', fontSize: 12, lineHeight: 18 },
+
   cardContainer: { marginBottom: 20 },
   cardGlass: { borderRadius: 20, overflow: 'hidden', backgroundColor: 'rgba(255, 255, 255, 0.05)', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.1)' },
   blockerCard: { padding: 20 },
@@ -561,13 +830,17 @@ const styles = StyleSheet.create({
   statusText: { fontSize: 12, fontFamily: 'Inter-Medium', color: '#ffffff' },
   timeRow: { flexDirection: 'row', alignItems: 'center' },
   timestamp: { fontSize: 12, fontFamily: 'Inter-Regular', color: '#666666', marginLeft: 4 },
+
   blockerTitle: { fontSize: 16, fontFamily: 'Inter-SemiBold', color: '#ffffff', marginBottom: 8 },
   blockerDescription: { fontSize: 14, fontFamily: 'Inter-Regular', color: '#cccccc', lineHeight: 20, marginBottom: 12 },
+
   aiHint: { flexDirection: 'row', gap: 8 as any, alignItems: 'flex-start', backgroundColor: 'rgba(255,217,102,0.08)', borderRadius: 12, padding: 10, borderWidth: 1, borderColor: 'rgba(255,217,102,0.25)', marginBottom: 12 },
   aiHintText: { color: '#f5f0dc', flex: 1, fontSize: 12, lineHeight: 18 },
+
   tagsContainer: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 16 },
   tag: { backgroundColor: 'rgba(255, 255, 255, 0.1)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, marginRight: 8, marginBottom: 4 },
   tagText: { fontSize: 10, fontFamily: 'Inter-Medium', color: '#ffffff' },
+
   cardFooter: { marginTop: 10, paddingTop: 12, borderTopWidth: 1, borderColor: 'rgba(255,255,255,0.08)', flexDirection: 'row', gap: 8 as any },
   footerBtnPrimary: { flex: 1, backgroundColor: '#fff', borderRadius: 12, paddingVertical: 10, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 6 as any },
   footerBtnPrimaryText: { color: '#000', fontWeight: '700' },
@@ -575,6 +848,23 @@ const styles = StyleSheet.create({
   footerBtnSecondaryText: { color: '#fff', fontWeight: '700' },
   footerBtnDanger: { flexBasis: 96, borderRadius: 12, backgroundColor: '#ffdbdb', alignItems: 'center', justifyContent: 'center', paddingVertical: 10 },
   footerBtnDangerText: { color: '#111', fontWeight: '800' },
+
+  helperRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8 },
+  helperInfo: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+  helperAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  helperInitial: { fontSize: 12, fontFamily: 'Inter-SemiBold', color: '#ffffff' },
+  helperDetails: { flex: 1 },
+  helperName: { fontSize: 14, fontFamily: 'Inter-Medium', color: '#ffffff', marginBottom: 2 },
+  helperMeta: { flexDirection: 'row', alignItems: 'center' },
+  levelBadgeSmall: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, marginRight: 8 },
+  levelTextSmall: { fontSize: 8, fontFamily: 'Inter-SemiBold' },
+  matchPercent: { fontSize: 10, fontFamily: 'Inter-Regular', color: '#999999' },
+
+  invBtnPrimary: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: '#fff' },
+  invBtnPrimaryText: { color: '#000', fontWeight: '800' },
+  invBtnSecondary: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.18)', backgroundColor: 'rgba(255,255,255,0.06)' },
+  invBtnSecondaryText: { color: '#fff', fontWeight: '800' },
+
   modalOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0, 0, 0, 0.5)' },
   modalContainer: { width: width - 40, maxHeight: height * 0.8 },
   modalGlass: { borderRadius: 24, overflow: 'hidden', backgroundColor: 'rgba(0, 0, 0, 0.8)', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.2)' },
@@ -586,4 +876,16 @@ const styles = StyleSheet.create({
   blockerInput: { backgroundColor: 'rgba(255, 255, 255, 0.08)', borderRadius: 16, padding: 16, fontSize: 16, fontFamily: 'Inter-Regular', color: '#ffffff', minHeight: 120, marginBottom: 16, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.1)' },
   createButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#ffffff', borderRadius: 16, paddingVertical: 16, paddingHorizontal: 24 },
   createButtonText: { fontSize: 16, fontFamily: 'Inter-SemiBold', color: '#000000', marginLeft: 8 },
+
+  searchInput: {
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    color: '#fff',
+    fontFamily: 'Inter-Regular',
+    marginTop: 10,
+  },
 });
