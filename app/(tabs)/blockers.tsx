@@ -1159,7 +1159,7 @@ export default function BlockersScreen() {
                           </Text>
                         </View>
                       )}
-
+                      {/* Self-assign (only for non-owners) */}
                       {!owner &&
                         b.status !== 'helping' &&
                         b.status !== 'resolved' && (
