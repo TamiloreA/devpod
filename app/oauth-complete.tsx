@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
+import { View, Text, ActivityIndicator } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 
 export default function OAuthComplete() {
@@ -10,19 +10,14 @@ export default function OAuthComplete() {
       router.replace({ pathname: '/(tabs)/profile', params: { refreshConnections: '1' } });
     }, 300);
     return () => clearTimeout(t);
-  }, []);
+  }, [provider, ok, error]);
 
   return (
-    <View style={s.c}>
+    <View style={{ flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' }}>
       <ActivityIndicator color="#fff" />
-      <Text style={s.t}>
-        {ok === '1' ? `Connected ${provider} ✓` : `Failed to connect ${provider}${error ? `: ${error}` : ''}`}
+      <Text style={{ color: '#fff', marginTop: 12 }}>
+        {ok === '1' ? `Connected ${provider}…` : `Finishing ${provider}…`}
       </Text>
     </View>
   );
 }
-
-const s = StyleSheet.create({
-  c: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' },
-  t: { color: '#fff', marginTop: 8 },
-});
