@@ -6,6 +6,7 @@
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "myapp",
+    "functionsUrl": "https://xmcnivzfctypulbnccqw.supabase.co/functions/v1",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
