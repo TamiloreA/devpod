@@ -31,7 +31,6 @@ type Item = { path: string; type: "blob" | "tree" };
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 const LIST_MAX_HEIGHT = Math.min(520, Math.floor(SCREEN_HEIGHT * 0.6));
 
-// ---------- helpers
 const cleanPath = (p: string) => String(p || "").trim().replace(/^\/+/, "");
 const isTree = (t: string) => /^(tree|dir|folder)$/i.test(t);
 const isBlob = (t: string) => /^(blob|file)$/i.test(t);
@@ -58,7 +57,6 @@ function normalizeItems(raw: any): Item[] {
     .filter(Boolean) as Item[];
 }
 
-// children can be Map | Array | plain object — make it iterable
 const childrenToArray = (node: any): any[] => {
   const c = node?.children;
   if (!c) return [];
@@ -69,7 +67,6 @@ const childrenToArray = (node: any): any[] => {
 };
 const hasKids = (node: any) => childrenToArray(node).length > 0;
 
-// very small fallback builder if external util returns an empty root
 function fallbackBuildTree(items: Item[]): TreeNode {
   const root: any = { name: "", path: "", type: "tree", open: true, children: new Map() };
   for (const it of items) {
@@ -140,7 +137,6 @@ export default function RepoTreeModal(props: Props) {
   const [sourceNote, setSourceNote] = useState<"edge" | "github" | null>(null);
   const [itemCount, setItemCount] = useState(0);
 
-  // ---- primary: Supabase function
   const fetchFromEdge = useCallback(async () => {
     const { data, error } = await supabase.functions.invoke("github-tree", {
       body: { pod_id: podId, owner, repo, ref: refName },
@@ -297,7 +293,6 @@ export default function RepoTreeModal(props: Props) {
             </Text>
           ) : null}
 
-          {/* The important fix: give this section a real height instead of flex:1 */}
           <View style={{ maxHeight: LIST_MAX_HEIGHT }}>
             {loading && !root ? (
               <View style={{ paddingVertical: 24, alignItems: "center" }}>
@@ -341,3 +336,4 @@ const styles = StyleSheet.create({
   rowText: { color: "#c9d1d9", fontSize: 12, flexShrink: 1 },
   rowTextHit: { color: "#fff", fontWeight: "700", textDecorationLine: "underline" },
 });
+

@@ -36,6 +36,8 @@ import {
   MessageSquare,
   UserPlus,
   GitBranch,
+  Folder,
+  File,
 } from 'lucide-react-native';
 import { supabase } from '@/lib/supabase';
 import { useLocalSearchParams } from 'expo-router';
@@ -197,6 +199,166 @@ const parseRepoOrFileUrl = (
     return null;
   }
 };
+
+/** ---------- Fancy inline GitHub path row (aesthetic-only) ---------- */
+const GH_COLORS = [
+  '#7bd88f', // mint
+  '#61afef', // blue
+  '#e06c75', // red
+  '#c678dd', // purple
+  '#e5c07b', // yellow
+  '#56b6c2', // cyan
+];
+
+function parseRefAndPathFromUrl(url: string): { ref?: string; path?: string } {
+  try {
+    const u = new URL(url);
+    const parts = u.pathname.replace(/^\/+|\/+$/g, '').split('/');
+    // /owner/repo/blob/<ref>/path... OR /owner/repo/tree/<ref>/path...
+    if (parts[2] === 'blob' || parts[2] === 'tree') {
+      const ref = parts[3];
+      const path = parts.slice(4).join('/');
+      return { ref, path };
+    }
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+function middleEllipsisSegments(segments: string[], max = 5) {
+  if (segments.length <= max) return segments;
+  const head = Math.ceil((max - 1) / 2);
+  const tail = Math.floor((max - 1) / 2);
+  return [...segments.slice(0, head), '…', ...segments.slice(-tail)];
+}
+
+type RepoPathInlineProps = {
+  link: GithubLink;
+  onOpen: () => void;
+  onOpenTree: () => void;
+};
+
+const RepoPathInline: React.FC<RepoPathInlineProps> = ({ link, onOpen, onOpenTree }) => {
+  const { ref, path } = useMemo(() => parseRefAndPathFromUrl(link.url), [link.url]);
+  const segs = useMemo(
+    () => middleEllipsisSegments((path || '').split('/').filter(Boolean), 5),
+    [path]
+  );
+
+  return (
+    <View style={inlineStyles.wrap}>
+      {/* left colored rail */}
+      <View style={inlineStyles.rail}>
+        {Array.from({ length: Math.max(2, Math.min(segs.length || 2, 6)) }).map((_, i) => (
+          <View key={i} style={[inlineStyles.railDot, { backgroundColor: GH_COLORS[i % GH_COLORS.length] }]} />
+        ))}
+      </View>
+
+      {/* main */}
+      <TouchableOpacity style={inlineStyles.main} activeOpacity={0.85} onPress={onOpen}>
+        <Text style={inlineStyles.repoText} numberOfLines={1}>
+          {link.owner}/{link.repo}
+          {ref ? <Text style={inlineStyles.refText}>@{ref}</Text> : null}
+        </Text>
+
+        <View style={inlineStyles.breadcrumb}>
+          {segs.length === 0 ? (
+            <View style={[inlineStyles.pill, { borderColor: 'rgba(255,255,255,0.18)' }]}>
+              <Folder size={12} color="#d1d5db" />
+              <Text style={inlineStyles.pillText}>/</Text>
+            </View>
+          ) : (
+            segs.map((s, i) => {
+              const isEllipsis = s === '…';
+              const color = GH_COLORS[i % GH_COLORS.length];
+              return (
+                <View
+                  key={`${s}-${i}`}
+                  style={[
+                    inlineStyles.pill,
+                    {
+                      borderColor: isEllipsis ? 'rgba(255,255,255,0.18)' : color,
+                      backgroundColor: isEllipsis ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.04)',
+                    },
+                  ]}
+                >
+                  {isEllipsis ? (
+                    <Text style={[inlineStyles.pillText, { marginLeft: 0 }]}>…</Text>
+                  ) : i < segs.length - 1 ? (
+                    <Folder size={12} color="#d1d5db" />
+                  ) : (
+                    <File size={12} color="#d1d5db" />
+                  )}
+                  {!isEllipsis && (
+                    <Text style={inlineStyles.pillText} numberOfLines={1}>
+                      {s}
+                    </Text>
+                  )}
+                </View>
+              );
+            })
+          )}
+        </View>
+      </TouchableOpacity>
+
+      {/* actions */}
+      <TouchableOpacity style={inlineStyles.treeBtn} onPress={onOpenTree} activeOpacity={0.85}>
+        <GitBranch size={14} color="#000" />
+        <Text style={inlineStyles.treeBtnText}>Tree</Text>
+      </TouchableOpacity>
+    </View>
+  );
+};
+
+const inlineStyles = StyleSheet.create({
+  wrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8 as any,
+    paddingVertical: 8,
+  },
+  rail: {
+    width: 10,
+    alignItems: 'center',
+    gap: 3 as any,
+  },
+  railDot: {
+    width: 6, height: 6, borderRadius: 3,
+    opacity: 0.95,
+  },
+  main: { flex: 1 },
+  repoText: { color: '#cfcfcf', fontSize: 12, fontFamily: 'Inter-Medium' },
+  refText: { color: '#9aa0a6', fontFamily: 'Inter-Regular' },
+  breadcrumb: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6 as any,
+    marginTop: 4,
+  },
+  pill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    maxWidth: '100%',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+    borderWidth: 1,
+    gap: 6 as any,
+  },
+  pillText: { color: '#dfe6ee', fontSize: 11, marginLeft: 2, maxWidth: 180 },
+  treeBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: '#fff',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6 as any,
+  },
+  treeBtnText: { color: '#000', fontWeight: '800', fontSize: 12 },
+});
+/** ---------- end fancy inline row ---------- */
 
 export default function BlockersScreen() {
   const params = useLocalSearchParams<{ raise?: string }>();
@@ -1219,48 +1381,12 @@ export default function BlockersScreen() {
                     {ghLinks.length > 0 && (
                       <View style={{ marginTop: 4 }}>
                         {ghLinks.map((gl) => (
-                          <View
+                          <RepoPathInline
                             key={gl.id}
-                            style={{
-                              flexDirection: 'row',
-                              alignItems: 'center',
-                              paddingVertical: 6,
-                              justifyContent: 'space-between',
-                            }}
-                          >
-                            <TouchableOpacity
-                              onPress={() => Linking.openURL(gl.url)}
-                              style={{ flexDirection: 'row', alignItems: 'center', gap: 8 as any, flex: 1 }}
-                            >
-                              <View
-                                style={{
-                                  width: 6,
-                                  height: 6,
-                                  borderRadius: 3,
-                                  backgroundColor: '#9aa0a6',
-                                }}
-                              />
-                              <Text
-                                style={{ color: '#cfcfcf', fontSize: 12 }}
-                                numberOfLines={1}
-                              >
-                                {kindLabel(gl.kind)} • {gl.title ?? `${gl.owner}/${gl.repo}`}
-                              </Text>
-                            </TouchableOpacity>
-
-                            <TouchableOpacity
-                              onPress={() => openRepoTreeFromUrl(gl.url)}
-                              style={[
-                                styles.invBtnSecondary,
-                                { paddingVertical: 6, paddingHorizontal: 10, marginLeft: 8 },
-                              ]}
-                            >
-                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 as any }}>
-                                <GitBranch size={14} color="#fff" />
-                                <Text style={styles.invBtnSecondaryText}>Tree</Text>
-                              </View>
-                            </TouchableOpacity>
-                          </View>
+                            link={gl}
+                            onOpen={() => Linking.openURL(gl.url)}
+                            onOpenTree={() => openRepoTreeFromUrl(gl.url)}
+                          />
                         ))}
                       </View>
                     )}
@@ -1997,12 +2123,14 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.08)',
     flexDirection: 'row',
     gap: 8 as any,
+    flexWrap: 'wrap',
   },
   footerBtnPrimary: {
-    flex: 1,
+    flexBasis: '48%', 
+    minWidth: '48%',
     backgroundColor: '#fff',
     borderRadius: 12,
-    paddingVertical: 10,
+    paddingVertical: 12,
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'center',
@@ -2010,26 +2138,27 @@ const styles = StyleSheet.create({
   },
   footerBtnPrimaryText: { color: '#000', fontWeight: '700' },
   footerBtnSecondary: {
-    flex: 1,
+    flexBasis: '48%',  
+    minWidth: '48%',
     borderRadius: 12,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.14)',
-    paddingVertical: 10,
+    paddingVertical: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
   footerBtnSecondaryText: { color: '#fff', fontWeight: '700' },
   footerBtnDanger: {
-    flexBasis: 96,
+    flexBasis: '48%', 
+    minWidth: '48%',
     borderRadius: 12,
     backgroundColor: '#ffdbdb',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 10,
+    paddingVertical: 12,
   },
   footerBtnDangerText: { color: '#111', fontWeight: '800' },
 
-  // Helpers list (modal)
   helperRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -2163,3 +2292,4 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
 });
+
