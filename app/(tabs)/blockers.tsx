@@ -1,4 +1,3 @@
-// app/(tabs)/blockers.tsx
 import React, {
   useEffect,
   useMemo,
@@ -18,6 +17,7 @@ import {
   RefreshControl,
   Alert,
 } from 'react-native';
+import * as Linking from 'expo-linking';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import Animated, {
@@ -35,9 +35,13 @@ import {
   Lightbulb,
   MessageSquare,
   UserPlus,
+  GitBranch,
 } from 'lucide-react-native';
 import { supabase } from '@/lib/supabase';
 import { useLocalSearchParams } from 'expo-router';
+
+// NEW: repo tree modal
+import RepoTreeModal from '@/components/RepoTreeModal';
 
 const { width, height } = Dimensions.get('window');
 
@@ -82,6 +86,7 @@ const getStatusColor = (status: string) =>
 const getSeverityColor = (sev: 'low' | 'medium' | 'high') =>
   sev === 'high' ? '#ff6b6b' : sev === 'medium' ? '#ffaa00' : '#59d985';
 
+/** ===== Types ===== */
 type BlockerRow = {
   id: string;
   pod_id: string;
@@ -120,6 +125,79 @@ type MemberProfile = {
   tags: string[];
 };
 
+type GithubLink = {
+  id: string;
+  pod_id: string;
+  blocker_id: string | null;
+  kind: 'issue' | 'pr' | 'commit' | 'repo' | 'tree' | 'blob';
+  owner: string;
+  repo: string;
+  number: number | null;
+  sha: string | null;
+  title: string | null;
+  url: string;
+  state: string | null;
+  metadata: any;
+  created_at: string;
+  updated_at: string;
+};
+
+const kindLabel = (k: GithubLink['kind']) =>
+  k === 'issue'
+    ? 'Issue'
+    : k === 'pr'
+    ? 'PR'
+    : k === 'commit'
+    ? 'Commit'
+    : k === 'repo'
+    ? 'Repo'
+    : k === 'tree'
+    ? 'Folder'
+    : k === 'blob'
+    ? 'File'
+    : 'Link';
+
+/** ===== Helper: parse any GitHub URL → {owner, repo, ref?, filePath?} ===== */
+const parseRepoOrFileUrl = (
+  raw: string
+):
+  | { owner: string; repo: string; ref?: string; filePath?: string }
+  | null => {
+  try {
+    const cleaned = raw.replace(/\s+/g, ''); // strip all whitespace/newlines
+    const u = new URL(cleaned);
+    if (u.hostname !== 'github.com') return null;
+    const parts = u.pathname.replace(/^\/+|\/+$/g, '').split('/');
+    if (parts.length < 2) return null;
+    const [owner, repo, third, fourth, ...rest] = parts;
+
+    // File: /owner/repo/blob/ref/path/to/file
+    if (third === 'blob' && fourth) {
+      return {
+        owner,
+        repo,
+        ref: fourth,
+        filePath: rest.length ? rest.join('/') : undefined,
+      };
+    }
+
+    // Folder (tree): /owner/repo/tree/ref[/path]
+    if (third === 'tree' && fourth) {
+      return {
+        owner,
+        repo,
+        ref: fourth,
+        filePath: rest.length ? rest.join('/') : undefined,
+      };
+    }
+
+    // Anything else (issue/pr/commit/root): open tree for the repo
+    return { owner, repo };
+  } catch {
+    return null;
+  }
+};
+
 export default function BlockersScreen() {
   const params = useLocalSearchParams<{ raise?: string }>();
 
@@ -135,6 +213,11 @@ export default function BlockersScreen() {
   // blockerId -> { targetUserId -> status }
   const [invitesByBlocker, setInvitesByBlocker] = useState<
     Record<string, Record<string, HelpInvite['status']>>
+  >({});
+
+  // GitHub links (grouped by blocker_id)
+  const [linksByBlocker, setLinksByBlocker] = useState<
+    Record<string, GithubLink[]>
   >({});
 
   // View filters
@@ -163,6 +246,22 @@ export default function BlockersScreen() {
   const [askModalOpen, setAskModalOpen] = useState(false);
   const [askBlocker, setAskBlocker] = useState<BlockerRow | null>(null);
   const [helpSearch, setHelpSearch] = useState('');
+
+  // GitHub attach modal
+  const [attachOpen, setAttachOpen] = useState(false);
+  const [attachFor, setAttachFor] = useState<BlockerRow | null>(null);
+  const [attachUrl, setAttachUrl] = useState('');
+  const [attachTitle, setAttachTitle] = useState('');
+  const [attachBusy, setAttachBusy] = useState(false);
+
+  // NEW: Repo tree modal state
+  const [treeOpen, setTreeOpen] = useState(false);
+  const [treeCtx, setTreeCtx] = useState<{
+    owner: string;
+    repo: string;
+    ref?: string;
+    filePath?: string;
+  } | null>(null);
 
   // Realtime channels
   const rtBlockersRef = useRef<ReturnType<typeof supabase.channel> | null>(
@@ -210,6 +309,7 @@ export default function BlockersScreen() {
             loadBlockers(p),
             loadMyHelpRequests(p, uid),
             loadMembers(p, uid),
+            loadGithubLinks(p),
           ]);
           await preloadInvitesForBlockers(p, uid);
         } else {
@@ -217,6 +317,7 @@ export default function BlockersScreen() {
           setMyHelp({});
           setMembers([]);
           setInvitesByBlocker({});
+          setLinksByBlocker({});
         }
       } catch (e: any) {
         console.error('blockers.init', e);
@@ -451,6 +552,27 @@ export default function BlockersScreen() {
     []
   );
 
+  const loadGithubLinks = useCallback(async (p: string) => {
+    try {
+      const { data, error } = await supabase.rpc('list_github_links', {
+        p_pod_id: p,
+        p_blocker_id: null,
+        p_kind: null,
+        p_limit: 500,
+        p_offset: 0,
+      });
+      if (error) throw error;
+      const grouped: Record<string, GithubLink[]> = {};
+      (data ?? []).forEach((gl: any) => {
+        const key = gl.blocker_id ?? '__pod__';
+        (grouped[key] ||= []).push(gl as GithubLink);
+      });
+      setLinksByBlocker(grouped);
+    } catch (e: any) {
+      console.log('github.list error', e?.message);
+    }
+  }, []);
+
   const onRefresh = useCallback(async () => {
     if (!podId || !authUid) return;
     try {
@@ -460,6 +582,7 @@ export default function BlockersScreen() {
         loadMyHelpRequests(podId, authUid),
         loadMembers(podId, authUid),
         preloadInvitesForBlockers(podId, authUid),
+        loadGithubLinks(podId),
       ]);
     } catch (e: any) {
       console.error('blockers.refresh', e);
@@ -473,6 +596,7 @@ export default function BlockersScreen() {
     loadMyHelpRequests,
     loadMembers,
     preloadInvitesForBlockers,
+    loadGithubLinks,
   ]);
 
   // ---- Simple triage
@@ -843,6 +967,14 @@ export default function BlockersScreen() {
     );
   }, [members, authUid, helpSearch, suggestions.length, askBlocker]);
 
+  // NEW: open repo tree from any GitHub URL
+  const openRepoTreeFromUrl = (url: string) => {
+    const info = parseRepoOrFileUrl(url);
+    if (!info) return Alert.alert('GitHub', 'Unsupported GitHub URL');
+    setTreeCtx(info);
+    setTreeOpen(true);
+  };
+
   return (
     <View style={styles.container}>
       <LinearGradient
@@ -1025,6 +1157,8 @@ export default function BlockersScreen() {
                   | undefined)
               : undefined;
 
+            const ghLinks = linksByBlocker[b.id] ?? [];
+
             return (
               <Animated.View
                 key={b.id}
@@ -1080,6 +1214,56 @@ export default function BlockersScreen() {
                         </View>
                       ))}
                     </View>
+
+                    {/* GitHub links under this blocker */}
+                    {ghLinks.length > 0 && (
+                      <View style={{ marginTop: 4 }}>
+                        {ghLinks.map((gl) => (
+                          <View
+                            key={gl.id}
+                            style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              paddingVertical: 6,
+                              justifyContent: 'space-between',
+                            }}
+                          >
+                            <TouchableOpacity
+                              onPress={() => Linking.openURL(gl.url)}
+                              style={{ flexDirection: 'row', alignItems: 'center', gap: 8 as any, flex: 1 }}
+                            >
+                              <View
+                                style={{
+                                  width: 6,
+                                  height: 6,
+                                  borderRadius: 3,
+                                  backgroundColor: '#9aa0a6',
+                                }}
+                              />
+                              <Text
+                                style={{ color: '#cfcfcf', fontSize: 12 }}
+                                numberOfLines={1}
+                              >
+                                {kindLabel(gl.kind)} • {gl.title ?? `${gl.owner}/${gl.repo}`}
+                              </Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              onPress={() => openRepoTreeFromUrl(gl.url)}
+                              style={[
+                                styles.invBtnSecondary,
+                                { paddingVertical: 6, paddingHorizontal: 10, marginLeft: 8 },
+                              ]}
+                            >
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 as any }}>
+                                <GitBranch size={14} color="#fff" />
+                                <Text style={styles.invBtnSecondaryText}>Tree</Text>
+                              </View>
+                            </TouchableOpacity>
+                          </View>
+                        ))}
+                      </View>
+                    )}
 
                     {/* Inline invite banner for target */}
                     {!!myInviteStatus && myInviteStatus === 'pending' && (
@@ -1159,6 +1343,36 @@ export default function BlockersScreen() {
                           </Text>
                         </View>
                       )}
+
+                      {/* Owner: Attach GitHub */}
+                      {owner && (
+                        <TouchableOpacity
+                          style={styles.footerBtnSecondary}
+                          onPress={() => {
+                            setAttachFor(b);
+                            setAttachUrl('');
+                            setAttachTitle('');
+                            setAttachOpen(true);
+                          }}
+                        >
+                          <Text style={styles.footerBtnSecondaryText}>
+                            Attach GitHub
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+
+                      {/* Quick "View Repo Tree" using first link if present */}
+                      {ghLinks.length > 0 && (
+                        <TouchableOpacity
+                          style={styles.footerBtnSecondary}
+                          onPress={() => openRepoTreeFromUrl(ghLinks[0].url)}
+                        >
+                          <Text style={styles.footerBtnSecondaryText}>
+                            View Repo Tree
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+
                       {/* Self-assign (only for non-owners) */}
                       {!owner &&
                         b.status !== 'helping' &&
@@ -1467,6 +1681,110 @@ export default function BlockersScreen() {
             </View>
           </View>
         </Modal>
+
+        {/* Attach GitHub modal */}
+        <Modal
+          visible={attachOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setAttachOpen(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={[styles.modalContainer, { width: width - 40 }]}>
+              <BlurView intensity={30} style={styles.modalGlass}>
+                <View style={styles.modal}>
+                  <View style={styles.modalHeader}>
+                    <View style={styles.modalTitleRow}>
+                      <Text style={styles.modalTitle}>Attach GitHub link</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.closeButton}
+                      onPress={() => setAttachOpen(false)}
+                    >
+                      <X color="#ffffff" size={20} />
+                    </TouchableOpacity>
+                  </View>
+
+                  <Text style={{ color: '#9aa0a6', fontSize: 12, marginBottom: 8 }}>
+                    Paste a GitHub Issue/PR/Commit/Repo/Folder/File URL (e.g. https://github.com/owner/repo/blob/main/app/index.tsx)
+                  </Text>
+
+                  <TextInput
+                    value={attachUrl}
+                    onChangeText={setAttachUrl}
+                    placeholder="https://github.com/owner/repo/tree/main/app"
+                    placeholderTextColor="#888"
+                    style={styles.searchInput}
+                    autoCapitalize="none"
+                  />
+
+                  <TextInput
+                    value={attachTitle}
+                    onChangeText={setAttachTitle}
+                    placeholder="Optional title override"
+                    placeholderTextColor="#888"
+                    style={[styles.searchInput, { marginTop: 8 }]}
+                  />
+
+                  <TouchableOpacity
+                    style={[styles.createButton, attachBusy && { opacity: 0.85, marginTop: 12 }]}
+                    disabled={attachBusy}
+                    onPress={async () => {
+                      if (!podId || !attachFor) return;
+                      if (!attachUrl.trim()) {
+                        Alert.alert('Missing URL', 'Please paste a GitHub URL.');
+                        return;
+                      }
+                      try {
+                        setAttachBusy(true);
+                        const { data, error } = await supabase.rpc('add_github_link', {
+                          p_pod_id: podId,
+                          p_url: attachUrl.trim(),
+                          p_blocker_id: attachFor.id,
+                          p_title: attachTitle.trim() || null,
+                          p_metadata: {},
+                        });
+                        if (error) throw error;
+                        const created = data as GithubLink;
+                        setLinksByBlocker((prev) => {
+                          const m = { ...(prev || {}) };
+                          const arr = [...(m[attachFor.id] ?? [])];
+                          if (!arr.find((x) => x.id === created.id)) {
+                            arr.unshift(created);
+                          }
+                          m[attachFor.id] = arr;
+                          return m;
+                        });
+                        setAttachOpen(false);
+                      } catch (e: any) {
+                        Alert.alert('Attach failed', e?.message ?? 'Could not attach link.');
+                      } finally {
+                        setAttachBusy(false);
+                      }
+                    }}
+                  >
+                    <Text style={styles.createButtonText}>
+                      {attachBusy ? 'Saving…' : 'Attach'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </BlurView>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Repo Tree modal (GitHub-like) */}
+        {podId && treeCtx && (
+          <RepoTreeModal
+            visible={treeOpen}
+            onClose={() => setTreeOpen(false)}
+            podId={podId}
+            owner={treeCtx.owner}
+            repo={treeCtx.repo}
+            gitRef={treeCtx.ref}
+            highlightPath={treeCtx.filePath}
+          />
+        )}
       </LinearGradient>
     </View>
   );
