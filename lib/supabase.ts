@@ -13,3 +13,5 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     detectSessionInUrl: false, 
   },
 });
+
+export const FUNCTIONS_URL = `${supabaseUrl.replace(/\/+$/, '')}/functions/v1`;

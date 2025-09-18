@@ -38,9 +38,13 @@ import {
   GitBranch,
   Folder,
   File,
+  Link as LinkIcon,
 } from 'lucide-react-native';
 import { supabase } from '@/lib/supabase';
 import { useLocalSearchParams } from 'expo-router';
+import ConnectJiraButton from '@/components/ConnectJiraButton';
+import { useJiraConnected } from '@/hooks/useJiraConnected';
+import { jiraLinkIssue, jiraCreateIssue } from '@/lib/jira';
 
 // NEW: repo tree modal
 import RepoTreeModal from '@/components/RepoTreeModal';
@@ -144,6 +148,14 @@ type GithubLink = {
   updated_at: string;
 };
 
+type JiraLink = {
+  blocker_id: string;
+  issue_key: string;
+  issue_url: string;
+  summary: string | null;
+  status: string | null;
+};
+
 const kindLabel = (k: GithubLink['kind']) =>
   k === 'issue'
     ? 'Issue'
@@ -226,6 +238,20 @@ function parseRefAndPathFromUrl(url: string): { ref?: string; path?: string } {
   }
 }
 
+function JiraBadgeOrButton() {
+  const connected = useJiraConnected();
+
+  if (connected === null) return null; // loading
+  if (connected) {
+    return (
+      <View style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: '#1f6feb' }}>
+        <Text style={{ color: '#fff', fontWeight: '800' }}>Jira Connected</Text>
+      </View>
+    );
+  }
+
+  return <ConnectJiraButton returnTo="/blockers" />;
+}
 function middleEllipsisSegments(segments: string[], max = 5) {
   if (segments.length <= max) return segments;
   const head = Math.ceil((max - 1) / 2);
@@ -382,6 +408,11 @@ export default function BlockersScreen() {
     Record<string, GithubLink[]>
   >({});
 
+  // NEW: Jira links (grouped by blocker_id)
+  const [jiraByBlocker, setJiraByBlocker] = useState<
+    Record<string, JiraLink[]>
+  >({});
+
   // View filters
   const [statusFilter, setStatusFilter] = useState<
     'all' | 'open' | 'helping' | 'resolved'
@@ -416,6 +447,14 @@ export default function BlockersScreen() {
   const [attachTitle, setAttachTitle] = useState('');
   const [attachBusy, setAttachBusy] = useState(false);
 
+  // NEW: Jira modal
+  const [jiraOpen, setJiraOpen] = useState(false);
+  const [jiraFor, setJiraFor] = useState<BlockerRow | null>(null);
+  const [jiraBusy, setJiraBusy] = useState(false);
+  const [jiraKeyOrUrl, setJiraKeyOrUrl] = useState('');
+  const [jiraProjectKey, setJiraProjectKey] = useState('');
+  const [jiraSummary, setJiraSummary] = useState('');
+
   // NEW: Repo tree modal state
   const [treeOpen, setTreeOpen] = useState(false);
   const [treeCtx, setTreeCtx] = useState<{
@@ -431,6 +470,7 @@ export default function BlockersScreen() {
   );
   const rtHelpRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const rtInviteRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const rtJiraRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
   // My volunteer requests (when I ask to help others)
   const [myHelp, setMyHelp] = useState<Record<string, HelpReq['status']>>({});
@@ -440,6 +480,9 @@ export default function BlockersScreen() {
   const buttonAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: buttonScale.value }],
   }));
+
+  // Is Jira connected (for modal gating)
+  const jiraConnected = useJiraConnected();
 
   // ---- Initial: auth → primary pod → data
   useEffect(() => {
@@ -472,6 +515,7 @@ export default function BlockersScreen() {
             loadMyHelpRequests(p, uid),
             loadMembers(p, uid),
             loadGithubLinks(p),
+            loadJiraLinks(p), // NEW
           ]);
           await preloadInvitesForBlockers(p, uid);
         } else {
@@ -480,6 +524,7 @@ export default function BlockersScreen() {
           setMembers([]);
           setInvitesByBlocker({});
           setLinksByBlocker({});
+          setJiraByBlocker({});
         }
       } catch (e: any) {
         console.error('blockers.init', e);
@@ -626,6 +671,56 @@ export default function BlockersScreen() {
     };
   }, [podId, authUid]);
 
+  // ---- Realtime: Jira links
+  useEffect(() => {
+    if (!podId) return;
+    if (rtJiraRef.current) {
+      rtJiraRef.current.unsubscribe();
+      rtJiraRef.current = null;
+    }
+    const ch = supabase
+      .channel(`rt-jira:${podId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'blocker_jira_links',
+          filter: `pod_id=eq.${podId}`,
+        },
+        (payload) => {
+          const row = (payload.new ?? payload.old) as any;
+          if (!row) return;
+          setJiraByBlocker((prev) => {
+            const copy = { ...prev };
+            const arr = [...(copy[row.blocker_id] ?? [])];
+            const idx = arr.findIndex((x) => x.issue_key === row.issue_key);
+            if (payload.eventType === 'DELETE') {
+              if (idx >= 0) arr.splice(idx, 1);
+            } else {
+              const entry: JiraLink = {
+                blocker_id: row.blocker_id,
+                issue_key: row.issue_key,
+                issue_url: row.issue_url,
+                summary: row.summary ?? null,
+                status: row.status ?? null,
+              };
+              if (idx >= 0) arr[idx] = entry;
+              else arr.unshift(entry);
+            }
+            copy[row.blocker_id] = arr;
+            return copy;
+          });
+        }
+      )
+      .subscribe();
+    rtJiraRef.current = ch;
+    return () => {
+      ch.unsubscribe();
+      rtJiraRef.current = null;
+    };
+  }, [podId]);
+
   // ---- Loaders
   const loadBlockers = useCallback(async (p: string) => {
     const { data, error } = await supabase
@@ -735,6 +830,30 @@ export default function BlockersScreen() {
     }
   }, []);
 
+  const loadJiraLinks = useCallback(async (p: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('blocker_jira_links')
+        .select('blocker_id, issue_key, issue_url, summary, status')
+        .eq('pod_id', p)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      const grouped: Record<string, JiraLink[]> = {};
+      (data ?? []).forEach((jl: any) => {
+        (grouped[jl.blocker_id] ||= []).push({
+          blocker_id: jl.blocker_id,
+          issue_key: jl.issue_key,
+          issue_url: jl.issue_url,
+          summary: jl.summary ?? null,
+          status: jl.status ?? null,
+        });
+      });
+      setJiraByBlocker(grouped);
+    } catch (e: any) {
+      console.log('jira.list error', e?.message);
+    }
+  }, []);
+
   const onRefresh = useCallback(async () => {
     if (!podId || !authUid) return;
     try {
@@ -745,6 +864,7 @@ export default function BlockersScreen() {
         loadMembers(podId, authUid),
         preloadInvitesForBlockers(podId, authUid),
         loadGithubLinks(podId),
+        loadJiraLinks(podId),
       ]);
     } catch (e: any) {
       console.error('blockers.refresh', e);
@@ -759,6 +879,7 @@ export default function BlockersScreen() {
     loadMembers,
     preloadInvitesForBlockers,
     loadGithubLinks,
+    loadJiraLinks,
   ]);
 
   // ---- Simple triage
@@ -1160,9 +1281,8 @@ export default function BlockersScreen() {
             style={styles.header}
           >
             <Text style={styles.title}>Blockers</Text>
-            <View
-              style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
-            >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <JiraBadgeOrButton />
               {pendingForMeCount > 0 && (
                 <View style={styles.requestPill}>
                   <Text style={styles.requestPillText}>
@@ -1320,6 +1440,7 @@ export default function BlockersScreen() {
               : undefined;
 
             const ghLinks = linksByBlocker[b.id] ?? [];
+            const jiraLinks = jiraByBlocker[b.id] ?? [];
 
             return (
               <Animated.View
@@ -1376,6 +1497,26 @@ export default function BlockersScreen() {
                         </View>
                       ))}
                     </View>
+
+                    {/* Jira links */}
+                    {jiraLinks.length > 0 && (
+                      <View style={{ marginBottom: 8, flexDirection: 'row', flexWrap: 'wrap' }}>
+                        {jiraLinks.map((jl) => (
+                          <TouchableOpacity
+                            key={`${b.id}-jira-${jl.issue_key}`}
+                            style={styles.jiraChip}
+                            onPress={() => Linking.openURL(jl.issue_url)}
+                            activeOpacity={0.8}
+                          >
+                            <LinkIcon size={12} color="#cfe0ff" />
+                            <Text style={styles.jiraChipText}>
+                              {jl.issue_key}
+                              {jl.status ? ` • ${jl.status}` : ''}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    )}
 
                     {/* GitHub links under this blocker */}
                     {ghLinks.length > 0 && (
@@ -1483,6 +1624,24 @@ export default function BlockersScreen() {
                         >
                           <Text style={styles.footerBtnSecondaryText}>
                             Attach GitHub
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+
+                      {/* Owner: Attach Jira */}
+                      {owner && (
+                        <TouchableOpacity
+                          style={styles.footerBtnSecondary}
+                          onPress={() => {
+                            setJiraFor(b);
+                            setJiraKeyOrUrl('');
+                            setJiraProjectKey('');
+                            setJiraSummary(b.title.slice(0, 180));
+                            setJiraOpen(true);
+                          }}
+                        >
+                          <Text style={styles.footerBtnSecondaryText}>
+                            Attach Jira
                           </Text>
                         </TouchableOpacity>
                       )}
@@ -1899,6 +2058,157 @@ export default function BlockersScreen() {
           </View>
         </Modal>
 
+        {/* Attach Jira modal */}
+        <Modal
+          visible={jiraOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setJiraOpen(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={[styles.modalContainer, { width: width - 40 }]}>
+              <BlurView intensity={30} style={styles.modalGlass}>
+                <View style={styles.modal}>
+                  <View style={styles.modalHeader}>
+                    <View style={styles.modalTitleRow}>
+                      <Text style={styles.modalTitle}>Attach Jira</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.closeButton}
+                      onPress={() => setJiraOpen(false)}
+                    >
+                      <X color="#ffffff" size={20} />
+                    </TouchableOpacity>
+                  </View>
+
+                  {jiraConnected ? (
+                    <>
+                      <Text style={{ color: '#cfe0ff', fontSize: 12, marginBottom: 6 }}>
+                        Link an existing issue <Text style={{ fontWeight: '700' }}>(ISSUE-123 or URL)</Text>
+                      </Text>
+                      <TextInput
+                        value={jiraKeyOrUrl}
+                        onChangeText={setJiraKeyOrUrl}
+                        placeholder="ABC-123 or https://your-domain.atlassian.net/browse/ABC-123"
+                        placeholderTextColor="#888"
+                        style={styles.searchInput}
+                        autoCapitalize="characters"
+                      />
+                      <TouchableOpacity
+                        style={[styles.createButton, jiraBusy && { opacity: 0.85, marginTop: 12 }]}
+                        disabled={jiraBusy}
+                        onPress={async () => {
+                          if (!jiraFor || !podId) return;
+                          if (!jiraKeyOrUrl.trim()) {
+                            Alert.alert('Missing issue', 'Enter an ISSUE-KEY or paste a Jira URL.');
+                            return;
+                          }
+                          try {
+                            setJiraBusy(true);
+                            const link = await jiraLinkIssue(jiraFor.id, jiraKeyOrUrl.trim());
+                            setJiraByBlocker((prev) => {
+                              const arr = [...(prev[jiraFor.id] ?? [])];
+                              if (!arr.find((x) => x.issue_key === link.issue_key)) {
+                                arr.unshift({
+                                  blocker_id: jiraFor.id,
+                                  issue_key: link.issue_key,
+                                  issue_url: link.issue_url,
+                                  status: link.status ?? null,
+                                  summary: link.summary ?? null,
+                                });
+                              }
+                              return { ...prev, [jiraFor.id]: arr };
+                            });
+                            setJiraOpen(false);
+                          } catch (e: any) {
+                            Alert.alert('Jira', e?.message ?? 'Could not link issue.');
+                          } finally {
+                            setJiraBusy(false);
+                          }
+                        }}
+                      >
+                        <Text style={styles.createButtonText}>
+                          {jiraBusy ? 'Linking…' : 'Link Issue'}
+                        </Text>
+                      </TouchableOpacity>
+
+                      <View style={{ height: 14 }} />
+
+                      <Text style={{ color: '#cfe0ff', fontSize: 12, marginBottom: 6 }}>
+                        Or create a new issue
+                      </Text>
+                      <TextInput
+                        value={jiraProjectKey}
+                        onChangeText={setJiraProjectKey}
+                        placeholder="Project key (e.g. ABC)"
+                        placeholderTextColor="#888"
+                        style={styles.searchInput}
+                        autoCapitalize="characters"
+                      />
+                      <TextInput
+                        value={jiraSummary}
+                        onChangeText={setJiraSummary}
+                        placeholder="Summary"
+                        placeholderTextColor="#888"
+                        style={[styles.searchInput, { marginTop: 8 }]}
+                      />
+                      <TouchableOpacity
+                        style={[styles.createButton, jiraBusy && { opacity: 0.85, marginTop: 12 }]}
+                        disabled={jiraBusy}
+                        onPress={async () => {
+                          if (!jiraFor || !podId) return;
+                          if (!jiraProjectKey.trim() || !jiraSummary.trim()) {
+                            Alert.alert('Missing details', 'Enter a project key and summary.');
+                            return;
+                          }
+                          try {
+                            setJiraBusy(true);
+                            const link = await jiraCreateIssue(
+                              jiraFor.id,
+                              jiraProjectKey.trim(),
+                              jiraSummary.trim(),
+                              jiraFor.description ?? undefined
+                            );
+                            setJiraByBlocker((prev) => {
+                              const arr = [...(prev[jiraFor.id] ?? [])];
+                              if (!arr.find((x) => x.issue_key === link.issue_key)) {
+                                arr.unshift({
+                                  blocker_id: jiraFor.id,
+                                  issue_key: link.issue_key,
+                                  issue_url: link.issue_url,
+                                  status: link.status ?? null,
+                                  summary: link.summary ?? null,
+                                });
+                              }
+                              return { ...prev, [jiraFor.id]: arr };
+                            });
+                            setJiraOpen(false);
+                          } catch (e: any) {
+                            Alert.alert('Jira', e?.message ?? 'Could not create issue.');
+                          } finally {
+                            setJiraBusy(false);
+                          }
+                        }}
+                      >
+                        <Text style={styles.createButtonText}>
+                          {jiraBusy ? 'Creating…' : 'Create Issue'}
+                        </Text>
+                      </TouchableOpacity>
+                    </>
+                  ) : (
+                    <View style={{ alignItems: 'center' }}>
+                      <Text style={{ color: '#cfcfcf', marginBottom: 12, textAlign: 'center' }}>
+                        Connect your Jira account to link or create issues.
+                      </Text>
+                      <ConnectJiraButton returnTo="/blockers" />
+                    </View>
+                  )}
+                </View>
+              </BlurView>
+            </View>
+          </View>
+        </Modal>
+
         {/* Repo Tree modal (GitHub-like) */}
         {podId && treeCtx && (
           <RepoTreeModal
@@ -2101,6 +2411,22 @@ const styles = StyleSheet.create({
   },
   tagText: { fontSize: 10, fontFamily: 'Inter-Medium', color: '#ffffff' },
 
+  // Jira chip
+  jiraChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6 as any,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: 'rgba(31,111,235,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(31,111,235,0.35)',
+    marginRight: 8,
+    marginBottom: 8,
+  },
+  jiraChipText: { color: '#cfe0ff', fontSize: 12, fontFamily: 'Inter-Medium' },
+
   // Inline invite banner
   inviteBanner: {
     flexDirection: 'row',
@@ -2126,7 +2452,7 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
   },
   footerBtnPrimary: {
-    flexBasis: '48%', 
+    flexBasis: '48%',
     minWidth: '48%',
     backgroundColor: '#fff',
     borderRadius: 12,
@@ -2138,7 +2464,7 @@ const styles = StyleSheet.create({
   },
   footerBtnPrimaryText: { color: '#000', fontWeight: '700' },
   footerBtnSecondary: {
-    flexBasis: '48%',  
+    flexBasis: '48%',
     minWidth: '48%',
     borderRadius: 12,
     borderWidth: 1,
@@ -2149,7 +2475,7 @@ const styles = StyleSheet.create({
   },
   footerBtnSecondaryText: { color: '#fff', fontWeight: '700' },
   footerBtnDanger: {
-    flexBasis: '48%', 
+    flexBasis: '48%',
     minWidth: '48%',
     borderRadius: 12,
     backgroundColor: '#ffdbdb',
@@ -2292,4 +2618,3 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
 });
-
