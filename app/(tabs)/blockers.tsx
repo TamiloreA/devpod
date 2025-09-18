@@ -240,17 +240,23 @@ function parseRefAndPathFromUrl(url: string): { ref?: string; path?: string } {
 
 function JiraBadgeOrButton() {
   const connected = useJiraConnected();
-
-  if (connected === null) return null; // loading
+  if (connected === null) return null;
   if (connected) {
     return (
-      <View style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: '#1f6feb' }}>
-        <Text style={{ color: '#fff', fontWeight: '800' }}>Jira Connected</Text>
+      <View
+        style={{
+          paddingHorizontal: 10,
+          paddingVertical: 6,
+          borderRadius: 999,
+          backgroundColor: "#1f6feb",
+        }}
+      >
+        <Text style={{ color: "#fff", fontWeight: "800" }}>Jira Connected</Text>
       </View>
     );
   }
 
-  return <ConnectJiraButton returnTo="/blockers" />;
+  return <ConnectJiraButton returnTo="/blockers?refreshConnections=1" />;
 }
 function middleEllipsisSegments(segments: string[], max = 5) {
   if (segments.length <= max) return segments;

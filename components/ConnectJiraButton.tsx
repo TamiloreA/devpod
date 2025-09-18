@@ -1,33 +1,35 @@
+// components/ConnectJiraButton.tsx
 import * as Linking from "expo-linking";
-import React from "react";
+import * as WebBrowser from "expo-web-browser";
 import { TouchableOpacity, Text, Alert } from "react-native";
 import { supabase } from "@/lib/supabase";
 
-export default function ConnectJiraButton({
-  returnTo,
-  label = "Connect Jira",
-}: {
-  returnTo?: string;
-  label?: string;
-}) {
+const FUNCTIONS_BASE =
+  process.env.EXPO_PUBLIC_FUNCTIONS_BASE ||
+  `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1`;
+
+type Props = { returnTo?: string }; 
+
+export default function ConnectJiraButton({ returnTo }: Props) {
   const start = async () => {
     try {
       const { data } = await supabase.auth.getSession();
       const jwt = data.session?.access_token;
       if (!jwt) throw new Error("Not signed in");
 
-      const appReturnUrl = returnTo
-        ? Linking.createURL(returnTo.startsWith("/") ? returnTo.slice(1) : returnTo)
-        : undefined;
+      const absReturnTo =
+        returnTo && returnTo.startsWith("/")
+          ? Linking.createURL(returnTo) 
+          : returnTo || "";
 
-      const fnBase = (supabase as any).functions?._url
-        || `${process.env.EXPO_PUBLIC_SUPABASE_URL ?? ""}/functions/v1`;
+      const url = `${FUNCTIONS_BASE}/oauth/jira/start?access_token=${encodeURIComponent(
+        jwt
+      )}${absReturnTo ? `&return_to=${encodeURIComponent(absReturnTo)}` : ""}`;
 
-      const url = new URL(`${fnBase}/oauth/jira/start`);
-      url.searchParams.set("access_token", jwt);
-      if (appReturnUrl) url.searchParams.set("return_to", appReturnUrl);
-
-      await Linking.openURL(url.toString());
+      await WebBrowser.openBrowserAsync(url, {
+        enableBarCollapsing: true,
+        showInRecents: true,
+      });
     } catch (e: any) {
       Alert.alert("Jira", e?.message ?? "Could not start Jira connect.");
     }
@@ -37,15 +39,13 @@ export default function ConnectJiraButton({
     <TouchableOpacity
       onPress={start}
       style={{
-        backgroundColor: "#ffffff",
-        paddingVertical: 12,
+        backgroundColor: "#fff",
         paddingHorizontal: 16,
+        paddingVertical: 10,
         borderRadius: 12,
-        alignItems: "center",
       }}
-      activeOpacity={0.85}
     >
-      <Text style={{ fontWeight: "800", color: "#000" }}>{label}</Text>
+      <Text style={{ fontWeight: "800", color: "#000" }}>Connect Jira</Text>
     </TouchableOpacity>
   );
 }
