@@ -8,28 +8,32 @@ const FUNCTIONS_BASE =
   process.env.EXPO_PUBLIC_FUNCTIONS_BASE ||
   `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1`;
 
-type Props = { returnTo?: string }; 
+type Props = { returnTo?: string };
 
-export default function ConnectJiraButton({ returnTo }: Props) {
+export default function ConnectJiraButton({
+  returnTo = "/blockers?refreshConnections=1",
+}: Props) {
   const start = async () => {
     try {
       const { data } = await supabase.auth.getSession();
       const jwt = data.session?.access_token;
       if (!jwt) throw new Error("Not signed in");
 
-      const absReturnTo =
-        returnTo && returnTo.startsWith("/")
-          ? Linking.createURL(returnTo) 
-          : returnTo || "";
+      const deepLink = Linking.createURL(returnTo);
 
-      const url = `${FUNCTIONS_BASE}/oauth/jira/start?access_token=${encodeURIComponent(
-        jwt
-      )}${absReturnTo ? `&return_to=${encodeURIComponent(absReturnTo)}` : ""}`;
+      const startUrl =
+        `${FUNCTIONS_BASE}/oauth/jira/start` +
+        `?access_token=${encodeURIComponent(jwt)}` +
+        `&return_to=${encodeURIComponent(deepLink)}`;
 
-      await WebBrowser.openBrowserAsync(url, {
-        enableBarCollapsing: true,
-        showInRecents: true,
-      });
+      const res = await WebBrowser.openAuthSessionAsync(startUrl, deepLink);
+
+      // Make absolutely sure we hit our deep link (some iOS versions are flaky)
+      if (res.type === "success" && res.url) {
+        await Linking.openURL(res.url);
+      } else if (res.type === "dismiss") {
+        await Linking.openURL(deepLink);
+      }
     } catch (e: any) {
       Alert.alert("Jira", e?.message ?? "Could not start Jira connect.");
     }

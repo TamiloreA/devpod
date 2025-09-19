@@ -393,7 +393,7 @@ const inlineStyles = StyleSheet.create({
 /** ---------- end fancy inline row ---------- */
 
 export default function BlockersScreen() {
-  const params = useLocalSearchParams<{ raise?: string }>();
+  const params = useLocalSearchParams<{ raise?: string; refreshConnections?: string }>();
 
   const [authUid, setAuthUid] = useState<string | null>(null);
   const [podId, setPodId] = useState<string | null>(null);
@@ -488,7 +488,7 @@ export default function BlockersScreen() {
   }));
 
   // Is Jira connected (for modal gating)
-  const jiraConnected = useJiraConnected();
+  const { connected: jiraConnected, refetch: refetchJiraConnected } = useJiraConnected();
 
   // ---- Initial: auth → primary pod → data
   useEffect(() => {
@@ -727,6 +727,12 @@ export default function BlockersScreen() {
     };
   }, [podId]);
 
+  useEffect(() => {
+    if (params.refreshConnections === "1") {
+      refetchJiraConnected(); 
+    }
+  }, [params.refreshConnections, refetchJiraConnected]);
+
   // ---- Loaders
   const loadBlockers = useCallback(async (p: string) => {
     const { data, error } = await supabase
@@ -839,10 +845,10 @@ export default function BlockersScreen() {
   const loadJiraLinks = useCallback(async (p: string) => {
     try {
       const { data, error } = await supabase
-        .from('blocker_jira_links')
-        .select('blocker_id, issue_key, issue_url, summary, status')
-        .eq('pod_id', p)
-        .order('created_at', { ascending: false });
+        .from("blocker_jira_links")
+        .select("blocker_id, issue_key, issue_url, summary, status, updated_at")
+        .eq("pod_id", p)
+        .order("updated_at", { ascending: false });
       if (error) throw error;
       const grouped: Record<string, JiraLink[]> = {};
       (data ?? []).forEach((jl: any) => {
@@ -856,7 +862,7 @@ export default function BlockersScreen() {
       });
       setJiraByBlocker(grouped);
     } catch (e: any) {
-      console.log('jira.list error', e?.message);
+      console.log("jira.list error", e?.message);
     }
   }, []);
 
@@ -2206,7 +2212,7 @@ export default function BlockersScreen() {
                       <Text style={{ color: '#cfcfcf', marginBottom: 12, textAlign: 'center' }}>
                         Connect your Jira account to link or create issues.
                       </Text>
-                      <ConnectJiraButton returnTo="/blockers" />
+                      <ConnectJiraButton returnTo="/blockers?refreshConnections=1" />
                     </View>
                   )}
                 </View>
