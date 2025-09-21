@@ -16,8 +16,15 @@ import {
   Dimensions,
   RefreshControl,
   Alert,
+  Pressable,
+  Platform,
+  Keyboard,
+  TouchableWithoutFeedback,
+  KeyboardAvoidingView,
 } from 'react-native';
+import type { TextInput as RNTextInput } from 'react-native';
 import * as Linking from 'expo-linking';
+import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import Animated, {
@@ -28,7 +35,6 @@ import Animated, {
   withSpring,
 } from 'react-native-reanimated';
 import {
-  Plus,
   Clock,
   X,
   Send,
@@ -41,13 +47,64 @@ import {
   Link as LinkIcon,
 } from 'lucide-react-native';
 import { supabase } from '@/lib/supabase';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useFocusEffect } from 'expo-router';
 import ConnectJiraButton from '@/components/ConnectJiraButton';
 import { useJiraConnected } from '@/hooks/useJiraConnected';
 import { jiraLinkIssue, jiraCreateIssue } from '@/lib/jira';
-
-// NEW: repo tree modal
 import RepoTreeModal from '@/components/RepoTreeModal';
+
+import SyntaxHighlighter from 'react-native-syntax-highlighter';
+
+let atomOneDark: any;
+try {
+  // most common in v2
+  atomOneDark = require('react-native-syntax-highlighter/src/styles/hljs').atomOneDark;
+} catch {
+  try {
+    // some builds publish without /src
+    atomOneDark = require('react-native-syntax-highlighter/styles/hljs').atomOneDark;
+  } catch {
+    atomOneDark = {}; // fallback: no colors, but no crash
+  }
+}
+
+type HLJSTheme = Record<string, any>;
+let theme: HLJSTheme | undefined;
+
+try {
+  // Most RN builds export here
+  const pack = require('react-native-syntax-highlighter/src/styles/hljs');
+  theme = pack?.atomOneDark ?? pack?.default?.atomOneDark ?? pack?.['atomOneDark'];
+} catch {}
+
+if (!theme) {
+  try {
+    // Some builds export here (no /src)
+    const pack = require('react-native-syntax-highlighter/styles/hljs');
+    theme = pack?.atomOneDark ?? pack?.default?.atomOneDark ?? pack?.['atomOneDark'];
+  } catch {}
+}
+
+// Minimal safe fallback so style.hljs is ALWAYS defined
+if (!theme) {
+  theme = {
+    hljs: { background: 'transparent', color: '#e6edf3' },
+    comment: { color: '#7f848e', fontStyle: 'italic' },
+    keyword: { color: '#c678dd' },
+    string: { color: '#98c379' },
+    number: { color: '#d19a66' },
+    title: { color: '#61afef' },
+    attr: { color: '#d19a66' },
+    built_in: { color: '#e5c07b' },
+    variable: { color: '#e06c75' },
+    'template-variable': { color: '#e06c75' },
+    literal: { color: '#56b6c2' },
+    meta: { color: '#abb2bf' },
+    section: { color: '#e5c07b' },
+    emphasis: { fontStyle: 'italic' },
+    strong: { fontWeight: '700' },
+  } as HLJSTheme;
+}
 
 const { width, height } = Dimensions.get('window');
 
@@ -92,7 +149,6 @@ const getStatusColor = (status: string) =>
 const getSeverityColor = (sev: 'low' | 'medium' | 'high') =>
   sev === 'high' ? '#ff6b6b' : sev === 'medium' ? '#ffaa00' : '#59d985';
 
-/** ===== Types ===== */
 type BlockerRow = {
   id: string;
   pod_id: string;
@@ -171,21 +227,17 @@ const kindLabel = (k: GithubLink['kind']) =>
     ? 'File'
     : 'Link';
 
-/** ===== Helper: parse any GitHub URL → {owner, repo, ref?, filePath?} ===== */
 const parseRepoOrFileUrl = (
   raw: string
-):
-  | { owner: string; repo: string; ref?: string; filePath?: string }
-  | null => {
+): { owner: string; repo: string; ref?: string; filePath?: string } | null => {
   try {
-    const cleaned = raw.replace(/\s+/g, ''); // strip all whitespace/newlines
+    const cleaned = raw.replace(/\s+/g, '');
     const u = new URL(cleaned);
     if (u.hostname !== 'github.com') return null;
     const parts = u.pathname.replace(/^\/+|\/+$/g, '').split('/');
     if (parts.length < 2) return null;
     const [owner, repo, third, fourth, ...rest] = parts;
 
-    // File: /owner/repo/blob/ref/path/to/file
     if (third === 'blob' && fourth) {
       return {
         owner,
@@ -195,7 +247,6 @@ const parseRepoOrFileUrl = (
       };
     }
 
-    // Folder (tree): /owner/repo/tree/ref[/path]
     if (third === 'tree' && fourth) {
       return {
         owner,
@@ -205,28 +256,25 @@ const parseRepoOrFileUrl = (
       };
     }
 
-    // Anything else (issue/pr/commit/root): open tree for the repo
     return { owner, repo };
   } catch {
     return null;
   }
 };
 
-/** ---------- Fancy inline GitHub path row (aesthetic-only) ---------- */
 const GH_COLORS = [
-  '#7bd88f', // mint
-  '#61afef', // blue
-  '#e06c75', // red
-  '#c678dd', // purple
-  '#e5c07b', // yellow
-  '#56b6c2', // cyan
+  '#7bd88f',
+  '#61afef',
+  '#e06c75',
+  '#c678dd',
+  '#e5c07b',
+  '#56b6c2',
 ];
 
 function parseRefAndPathFromUrl(url: string): { ref?: string; path?: string } {
   try {
     const u = new URL(url);
     const parts = u.pathname.replace(/^\/+|\/+$/g, '').split('/');
-    // /owner/repo/blob/<ref>/path... OR /owner/repo/tree/<ref>/path...
     if (parts[2] === 'blob' || parts[2] === 'tree') {
       const ref = parts[3];
       const path = parts.slice(4).join('/');
@@ -238,26 +286,375 @@ function parseRefAndPathFromUrl(url: string): { ref?: string; path?: string } {
   }
 }
 
-function JiraBadgeOrButton() {
-  const connected = useJiraConnected();
-  if (connected === null) return null;
-  if (connected) {
-    return (
-      <View
-        style={{
-          paddingHorizontal: 10,
-          paddingVertical: 6,
-          borderRadius: 999,
-          backgroundColor: "#1f6feb",
-        }}
-      >
-        <Text style={{ color: "#fff", fontWeight: "800" }}>Jira Connected</Text>
-      </View>
-    );
+// --------- Description parsing/rendering with code blocks ----------
+
+type DescPart =
+  | { type: 'text'; text: string }
+  | { type: 'code'; lang?: string; code: string };
+
+function parseDescriptionIntoBlocks(src: string): DescPart[] {
+  if (!src) return [];
+  // Normalize newlines so iOS/CRLF copy-paste works
+  const lines = src.replace(/\r\n?/g, '\n').split('\n');
+
+  const out: DescPart[] = [];
+  let buf: string[] = [];
+
+  const flushText = () => {
+    if (buf.length) {
+      out.push({ type: 'text', text: buf.join('\n') });
+      buf = [];
+    }
+  };
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Allow indent, 2+ backticks OR 3+ tildes, optional language, then nothing else
+    // examples: "```tsx", "  ``` js  ", "~~~", "   ``python"
+    const open = line.match(/^\s*(`{2,}|~{3,})\s*([A-Za-z0-9_-]+)?\s*$/);
+    if (!open) {
+      buf.push(line);
+      i++;
+      continue;
+    }
+
+    const fenceChars = open[1][0]; // "`" or "~"
+    const fenceLen = open[1].length;
+    const lang = (open[2] || 'plaintext').toLowerCase();
+
+    flushText();
+    i++; // skip opening fence
+
+    const body: string[] = [];
+    const closeRe = new RegExp(`^\\s*\\${fenceChars}{${fenceLen},}\\s*$`);
+
+    while (i < lines.length && !closeRe.test(lines[i])) {
+      body.push(lines[i]);
+      i++;
+    }
+    // skip the closing fence if present
+    if (i < lines.length && closeRe.test(lines[i])) i++;
+
+    out.push({
+      type: 'code',
+      lang,
+      code: body.join('\n').replace(/\s+$/, ''),
+    });
   }
 
-  return <ConnectJiraButton returnTo="/blockers?refreshConnections=1" />;
+  flushText();
+  return out;
 }
+
+
+/** Render inline code (backticks) within a text chunk */
+const TextWithInlineCode: React.FC<{ text: string }> = ({ text }) => {
+  // split on single backticks while keeping the delimiters
+  const parts = text.split(/(`[^`]+`)/g).filter(Boolean);
+
+  return (
+    <Text selectable style={styles.blockerDescription}>
+      {parts.map((chunk, i) => {
+        if (chunk.startsWith('`') && chunk.endsWith('`')) {
+          const inner = chunk.slice(1, -1);
+          return (
+            <Text
+              // inline code MUST be Text, not View
+              key={`code-${i}`}
+              style={codeStyles.inlineTextInText}
+            >
+              {inner}
+            </Text>
+          );
+        }
+        return <Text key={`t-${i}`}>{chunk}</Text>;
+      })}
+    </Text>
+  );
+};
+
+
+const CodeBlock: React.FC<{ code: string; lang?: string }> = ({ code, lang }) => {
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [wrap, setWrap] = useState(false);
+
+  const language = (lang || 'plaintext').toLowerCase();
+  const clean = (code || '').replace(/\s+$/, '');
+  const lines = useMemo(() => clean.split('\n'), [clean]);
+  const lineCount = clean ? lines.length : 0;
+
+  const onCopy = async () => {
+    try {
+      await Clipboard.setStringAsync(clean);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1000);
+    } catch {}
+  };
+
+  return (
+    <View style={CB.outer}>
+      <LinearGradient
+        colors={['rgba(255,255,255,0.16)', 'rgba(255,255,255,0.04)']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={CB.glow}
+      />
+      <View style={CB.wrap}>
+        {/* Header */}
+        <View style={CB.header}>
+          <View style={CB.winDots}>
+            <View style={[CB.dot, { backgroundColor: '#ff5f56' }]} />
+            <View style={[CB.dot, { backgroundColor: '#ffbd2e' }]} />
+            <View style={[CB.dot, { backgroundColor: '#27c93f' }]} />
+          </View>
+
+          <View style={CB.headerCenter}>
+            <Text style={CB.langPill}>
+              {language}
+              {lineCount ? ` • ${lineCount} ${lineCount === 1 ? 'line' : 'lines'}` : ''}
+            </Text>
+          </View>
+
+          <View style={CB.headerRight}>
+            <TouchableOpacity
+              onPress={onCopy}
+              activeOpacity={0.9}
+              style={[CB.toolBtn, copied && CB.toolBtnOk]}
+            >
+              <Text style={[CB.toolBtnTxt, copied && { color: '#59d985' }]}>
+                {copied ? 'Copied' : 'Copy'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* Toolbar */}
+        <View style={CB.toolbar}>
+          <TouchableOpacity
+            onPress={() => setWrap((v) => !v)}
+            activeOpacity={0.85}
+            style={[CB.chip, wrap && CB.chipOn]}
+          >
+            <Text style={[CB.chipTxt, wrap && CB.chipTxtOn]}>
+              {wrap ? 'Unwrap' : 'Wrap'}
+            </Text>
+          </TouchableOpacity>
+
+          {lineCount > 14 && (
+            <TouchableOpacity
+              onPress={() => setExpanded((v) => !v)}
+              activeOpacity={0.85}
+              style={CB.chip}
+            >
+              <Text style={CB.chipTxt}>{expanded ? 'Collapse' : 'Expand'}</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* Body */}
+        <View style={[CB.body, !expanded && CB.bodyCollapsed]}>
+          {!wrap ? (
+            <ScrollView style={CB.vscroll} bounces={false} showsVerticalScrollIndicator={false}>
+              <View style={CB.row}>
+                <View style={CB.gutter}>
+                  {lines.map((_, i) => (
+                    <Text key={i} style={CB.gutterTxt}>
+                      {i + 1}
+                    </Text>
+                  ))}
+                </View>
+
+                <ScrollView
+                  horizontal
+                  bounces={false}
+                  showsHorizontalScrollIndicator={false}
+                  style={CB.hscroll}
+                >
+                  <View style={{ paddingRight: 12 }}>
+                    <SyntaxHighlighter
+                      language={language}
+                      style={theme}
+                      highlighter="hljs"
+                      PreTag={View as any}
+                      CodeTag={Text as any}
+                      customStyle={{ backgroundColor: 'transparent', padding: 0, margin: 0 }}
+                      codeTagProps={{
+                        selectable: true,
+                        style: {
+                          fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }) as any,
+                          fontSize: 12,
+                          lineHeight: 20,
+                        },
+                      }}
+                    >
+                      {clean}
+                    </SyntaxHighlighter>
+                  </View>
+                </ScrollView>
+              </View>
+            </ScrollView>
+          ) : (
+            <ScrollView style={CB.vscroll} bounces={false} showsVerticalScrollIndicator={false}>
+              <View style={{ paddingHorizontal: 12 }}>
+                <SyntaxHighlighter
+                  language={language}
+                  style={theme}
+                  highlighter="hljs"
+                  PreTag={View as any}
+                  CodeTag={Text as any}
+                  customStyle={{ backgroundColor: 'transparent', padding: 0, margin: 0 }}
+                  codeTagProps={{
+                    selectable: true,
+                    style: {
+                      fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }) as any,
+                      fontSize: 12,
+                      lineHeight: 20,
+                    },
+                  }}
+                >
+                  {clean}
+                </SyntaxHighlighter>
+              </View>
+            </ScrollView>
+          )}
+
+          {!expanded && <LinearGradient colors={['rgba(17,19,23,0)', 'rgba(17,19,23,0.85)']} style={CB.fade} />}
+        </View>
+      </View>
+    </View>
+  );
+};
+
+const CB = StyleSheet.create({
+  outer: { marginBottom: 12, borderRadius: 14, position: 'relative' },
+  glow: { ...StyleSheet.absoluteFillObject, borderRadius: 14, opacity: 0.4 },
+  wrap: {
+    borderRadius: 14,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.10)',
+    backgroundColor: '#0f1216',
+    shadowColor: '#000',
+    shadowOpacity: 0.28,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 3,
+  },
+
+  header: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  winDots: { flexDirection: 'row', gap: 6, alignItems: 'center' },
+  dot: { width: 10, height: 10, borderRadius: 5, opacity: 0.9 },
+  headerCenter: { flex: 1, alignItems: 'center' },
+  headerRight: { width: 90, alignItems: 'flex-end' },
+
+  langPill: {
+    color: '#cfe0ff',
+    fontSize: 11,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(31,111,235,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(31,111,235,0.35)',
+    overflow: 'hidden',
+  },
+
+  toolBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+  },
+  toolBtnOk: {
+    backgroundColor: 'rgba(89,217,133,0.16)',
+    borderColor: 'rgba(89,217,133,0.4)',
+  },
+  toolBtnTxt: { color: '#fff', fontWeight: '800', fontSize: 12 },
+
+  toolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    paddingBottom: 6,
+    borderBottomWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+    backgroundColor: 'rgba(255,255,255,0.02)',
+  },
+  chip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  chipOn: {
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderColor: 'rgba(255,255,255,0.22)',
+  },
+  chipTxt: { color: '#e6edf3', fontWeight: '700', fontSize: 12 },
+  chipTxtOn: { color: '#fff' },
+
+  body: { position: 'relative' },
+  bodyCollapsed: { maxHeight: 260 },
+  vscroll: { maxWidth: '100%' },
+  row: { flexDirection: 'row', alignItems: 'flex-start' },
+
+  gutter: {
+    paddingLeft: 12,
+    paddingRight: 10,
+    paddingTop: 2,
+    borderRightWidth: 1,
+    borderRightColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.03)',
+  },
+  gutterTxt: {
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }) as any,
+    fontSize: 11,
+    lineHeight: 20,
+    color: '#8a9199',
+    textAlign: 'right',
+  },
+  hscroll: { flexGrow: 1 },
+  fade: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 56 },
+});
+
+const RichDescription: React.FC<{ text: string }> = ({ text }) => {
+  const parts = useMemo(() => parseDescriptionIntoBlocks(text), [text]);
+  if (!parts.length) return null;
+
+  return (
+    <View style={{ marginTop: 4, marginBottom: 12, position: 'relative', zIndex: 1 }}>
+      {parts.map((p, i) =>
+        p.type === 'code' ? (
+          <CodeBlock key={`code-${i}`} code={p.code} lang={p.lang} />
+        ) : (
+          <View key={`text-${i}`} style={{ marginBottom: 6 }}>
+            <TextWithInlineCode text={p.text} />
+          </View>
+        )
+      )}
+    </View>
+  );
+};
+
+// ---------------- GitHub inline path renderer ----------------
+
 function middleEllipsisSegments(segments: string[], max = 5) {
   if (segments.length <= max) return segments;
   const head = Math.ceil((max - 1) / 2);
@@ -271,8 +668,15 @@ type RepoPathInlineProps = {
   onOpenTree: () => void;
 };
 
-const RepoPathInline: React.FC<RepoPathInlineProps> = ({ link, onOpen, onOpenTree }) => {
-  const { ref, path } = useMemo(() => parseRefAndPathFromUrl(link.url), [link.url]);
+const RepoPathInline: React.FC<RepoPathInlineProps> = ({
+  link,
+  onOpen,
+  onOpenTree,
+}) => {
+  const { ref, path } = useMemo(
+    () => parseRefAndPathFromUrl(link.url),
+    [link.url]
+  );
   const segs = useMemo(
     () => middleEllipsisSegments((path || '').split('/').filter(Boolean), 5),
     [path]
@@ -280,15 +684,25 @@ const RepoPathInline: React.FC<RepoPathInlineProps> = ({ link, onOpen, onOpenTre
 
   return (
     <View style={inlineStyles.wrap}>
-      {/* left colored rail */}
       <View style={inlineStyles.rail}>
-        {Array.from({ length: Math.max(2, Math.min(segs.length || 2, 6)) }).map((_, i) => (
-          <View key={i} style={[inlineStyles.railDot, { backgroundColor: GH_COLORS[i % GH_COLORS.length] }]} />
-        ))}
+        {Array.from({ length: Math.max(2, Math.min(segs.length || 2, 6)) }).map(
+          (_, i) => (
+            <View
+              key={i}
+              style={[
+                inlineStyles.railDot,
+                { backgroundColor: GH_COLORS[i % GH_COLORS.length] },
+              ]}
+            />
+          )
+        )}
       </View>
 
-      {/* main */}
-      <TouchableOpacity style={inlineStyles.main} activeOpacity={0.85} onPress={onOpen}>
+      <TouchableOpacity
+        style={inlineStyles.main}
+        activeOpacity={0.85}
+        onPress={onOpen}
+      >
         <Text style={inlineStyles.repoText} numberOfLines={1}>
           {link.owner}/{link.repo}
           {ref ? <Text style={inlineStyles.refText}>@{ref}</Text> : null}
@@ -296,7 +710,12 @@ const RepoPathInline: React.FC<RepoPathInlineProps> = ({ link, onOpen, onOpenTre
 
         <View style={inlineStyles.breadcrumb}>
           {segs.length === 0 ? (
-            <View style={[inlineStyles.pill, { borderColor: 'rgba(255,255,255,0.18)' }]}>
+            <View
+              style={[
+                inlineStyles.pill,
+                { borderColor: 'rgba(255,255,255,0.18)' },
+              ]}
+            >
               <Folder size={12} color="#d1d5db" />
               <Text style={inlineStyles.pillText}>/</Text>
             </View>
@@ -310,13 +729,19 @@ const RepoPathInline: React.FC<RepoPathInlineProps> = ({ link, onOpen, onOpenTre
                   style={[
                     inlineStyles.pill,
                     {
-                      borderColor: isEllipsis ? 'rgba(255,255,255,0.18)' : color,
-                      backgroundColor: isEllipsis ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.04)',
+                      borderColor: isEllipsis
+                        ? 'rgba(255,255,255,0.18)'
+                        : color,
+                      backgroundColor: isEllipsis
+                        ? 'rgba(255,255,255,0.06)'
+                        : 'rgba(255,255,255,0.04)',
                     },
                   ]}
                 >
                   {isEllipsis ? (
-                    <Text style={[inlineStyles.pillText, { marginLeft: 0 }]}>…</Text>
+                    <Text style={[inlineStyles.pillText, { marginLeft: 0 }]}>
+                      …
+                    </Text>
                   ) : i < segs.length - 1 ? (
                     <Folder size={12} color="#d1d5db" />
                   ) : (
@@ -334,8 +759,11 @@ const RepoPathInline: React.FC<RepoPathInlineProps> = ({ link, onOpen, onOpenTre
         </View>
       </TouchableOpacity>
 
-      {/* actions */}
-      <TouchableOpacity style={inlineStyles.treeBtn} onPress={onOpenTree} activeOpacity={0.85}>
+      <TouchableOpacity
+        style={inlineStyles.treeBtn}
+        onPress={onOpenTree}
+        activeOpacity={0.85}
+      >
         <GitBranch size={14} color="#000" />
         <Text style={inlineStyles.treeBtnText}>Tree</Text>
       </TouchableOpacity>
@@ -356,7 +784,9 @@ const inlineStyles = StyleSheet.create({
     gap: 3 as any,
   },
   railDot: {
-    width: 6, height: 6, borderRadius: 3,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
     opacity: 0.95,
   },
   main: { flex: 1 },
@@ -390,10 +820,12 @@ const inlineStyles = StyleSheet.create({
   },
   treeBtnText: { color: '#000', fontWeight: '800', fontSize: 12 },
 });
-/** ---------- end fancy inline row ---------- */
 
 export default function BlockersScreen() {
-  const params = useLocalSearchParams<{ raise?: string; refreshConnections?: string }>();
+  const params = useLocalSearchParams<{
+    raise?: string;
+    refreshConnections?: string;
+  }>();
 
   const [authUid, setAuthUid] = useState<string | null>(null);
   const [podId, setPodId] = useState<string | null>(null);
@@ -402,24 +834,19 @@ export default function BlockersScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [blockers, setBlockers] = useState<BlockerRow[]>([]);
 
-  // Suggestions + invites
   const [members, setMembers] = useState<MemberProfile[]>([]);
-  // blockerId -> { targetUserId -> status }
   const [invitesByBlocker, setInvitesByBlocker] = useState<
     Record<string, Record<string, HelpInvite['status']>>
   >({});
 
-  // GitHub links (grouped by blocker_id)
   const [linksByBlocker, setLinksByBlocker] = useState<
     Record<string, GithubLink[]>
   >({});
 
-  // NEW: Jira links (grouped by blocker_id)
   const [jiraByBlocker, setJiraByBlocker] = useState<
     Record<string, JiraLink[]>
   >({});
 
-  // View filters
   const [statusFilter, setStatusFilter] = useState<
     'all' | 'open' | 'helping' | 'resolved'
   >('all');
@@ -428,7 +855,6 @@ export default function BlockersScreen() {
   );
   const [q, setQ] = useState('');
 
-  // Composer + triage
   const [composeText, setComposeText] = useState('');
   const [triage, setTriage] = useState<{
     severity: 'low' | 'medium' | 'high';
@@ -436,32 +862,28 @@ export default function BlockersScreen() {
     note: string;
   } | null>(null);
 
-  // Create flow
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [blockerText, setBlockerText] = useState('');
   const [creating, setCreating] = useState(false);
 
-  // Owner "ask for help" modal
   const [askModalOpen, setAskModalOpen] = useState(false);
   const [askBlocker, setAskBlocker] = useState<BlockerRow | null>(null);
   const [helpSearch, setHelpSearch] = useState('');
 
-  // GitHub attach modal
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachFor, setAttachFor] = useState<BlockerRow | null>(null);
   const [attachUrl, setAttachUrl] = useState('');
   const [attachTitle, setAttachTitle] = useState('');
   const [attachBusy, setAttachBusy] = useState(false);
 
-  // NEW: Jira modal
   const [jiraOpen, setJiraOpen] = useState(false);
   const [jiraFor, setJiraFor] = useState<BlockerRow | null>(null);
   const [jiraBusy, setJiraBusy] = useState(false);
   const [jiraKeyOrUrl, setJiraKeyOrUrl] = useState('');
   const [jiraProjectKey, setJiraProjectKey] = useState('');
   const [jiraSummary, setJiraSummary] = useState('');
+  const inputRef = useRef<RNTextInput>(null);
 
-  // NEW: Repo tree modal state
   const [treeOpen, setTreeOpen] = useState(false);
   const [treeCtx, setTreeCtx] = useState<{
     owner: string;
@@ -470,7 +892,6 @@ export default function BlockersScreen() {
     filePath?: string;
   } | null>(null);
 
-  // Realtime channels
   const rtBlockersRef = useRef<ReturnType<typeof supabase.channel> | null>(
     null
   );
@@ -478,19 +899,16 @@ export default function BlockersScreen() {
   const rtInviteRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const rtJiraRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
-  // My volunteer requests (when I ask to help others)
   const [myHelp, setMyHelp] = useState<Record<string, HelpReq['status']>>({});
 
-  // Button animation
   const buttonScale = useSharedValue(1);
   const buttonAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: buttonScale.value }],
   }));
 
-  // Is Jira connected (for modal gating)
-  const { connected: jiraConnected, refetch: refetchJiraConnected } = useJiraConnected();
+  const { connected: jiraConnected, refetch: refetchJiraConnected } =
+    useJiraConnected();
 
-  // ---- Initial: auth → primary pod → data
   useEffect(() => {
     (async () => {
       try {
@@ -521,7 +939,7 @@ export default function BlockersScreen() {
             loadMyHelpRequests(p, uid),
             loadMembers(p, uid),
             loadGithubLinks(p),
-            loadJiraLinks(p), // NEW
+            loadJiraLinks(p),
           ]);
           await preloadInvitesForBlockers(p, uid);
         } else {
@@ -545,7 +963,6 @@ export default function BlockersScreen() {
     if (params.raise === '1') setShowCreateModal(true);
   }, [params.raise]);
 
-  // ---- Realtime: blockers
   useEffect(() => {
     if (!podId) return;
     if (rtBlockersRef.current) {
@@ -588,7 +1005,6 @@ export default function BlockersScreen() {
     };
   }, [podId]);
 
-  // ---- Realtime: volunteer requests (I ask to help others)
   useEffect(() => {
     if (!podId || !authUid) return;
     if (rtHelpRef.current) {
@@ -608,7 +1024,7 @@ export default function BlockersScreen() {
         },
         (payload) => {
           const row = (payload.new ?? payload.old) as HelpReq;
-          if (!row || row.requester_user_id !== authUid) return; // only track my requests
+          if (!row || row.requester_user_id !== authUid) return;
           setMyHelp((prev) => {
             const next = { ...prev };
             if (payload.eventType === 'DELETE') {
@@ -629,7 +1045,6 @@ export default function BlockersScreen() {
     };
   }, [podId, authUid]);
 
-  // ---- Realtime: invites (owner asks target; I care if I am target OR inviter)
   useEffect(() => {
     if (!podId || !authUid) return;
     if (rtInviteRef.current) {
@@ -677,7 +1092,13 @@ export default function BlockersScreen() {
     };
   }, [podId, authUid]);
 
-  // ---- Realtime: Jira links
+  useFocusEffect(
+    useCallback(() => {
+      const t = setTimeout(() => inputRef.current?.focus(), 250);
+      return () => clearTimeout(t);
+    }, [])
+  );
+
   useEffect(() => {
     if (!podId) return;
     if (rtJiraRef.current) {
@@ -728,8 +1149,8 @@ export default function BlockersScreen() {
   }, [podId]);
 
   useEffect(() => {
-    if (params.refreshConnections === "1") {
-      refetchJiraConnected(); 
+    if (params.refreshConnections === '1') {
+      refetchJiraConnected();
     }
   }, [params.refreshConnections, refetchJiraConnected]);
 
@@ -845,10 +1266,10 @@ export default function BlockersScreen() {
   const loadJiraLinks = useCallback(async (p: string) => {
     try {
       const { data, error } = await supabase
-        .from("blocker_jira_links")
-        .select("blocker_id, issue_key, issue_url, summary, status, updated_at")
-        .eq("pod_id", p)
-        .order("updated_at", { ascending: false });
+        .from('blocker_jira_links')
+        .select('blocker_id, issue_key, issue_url, summary, status, updated_at')
+        .eq('pod_id', p)
+        .order('updated_at', { ascending: false });
       if (error) throw error;
       const grouped: Record<string, JiraLink[]> = {};
       (data ?? []).forEach((jl: any) => {
@@ -862,7 +1283,7 @@ export default function BlockersScreen() {
       });
       setJiraByBlocker(grouped);
     } catch (e: any) {
-      console.log("jira.list error", e?.message);
+      console.log('jira.list error', e?.message);
     }
   }, []);
 
@@ -988,16 +1409,14 @@ export default function BlockersScreen() {
   const askToHelp = async (blocker: BlockerRow) => {
     if (!podId || !authUid) return;
     try {
-      const { error } = await supabase
-        .from('blocker_help_requests')
-        .insert([
-          {
-            pod_id: podId,
-            blocker_id: blocker.id,
-            requester_user_id: authUid,
-            status: 'pending',
-          },
-        ]);
+      const { error } = await supabase.from('blocker_help_requests').insert([
+        {
+          pod_id: podId,
+          blocker_id: blocker.id,
+          requester_user_id: authUid,
+          status: 'pending',
+        },
+      ]);
       if (error && (error as any).code !== '23505') throw error; // ignore duplicate
       setMyHelp((m) => ({ ...m, [blocker.id]: 'pending' }));
     } catch (e: any) {
@@ -1082,17 +1501,15 @@ export default function BlockersScreen() {
   const inviteHelper = async (blocker: BlockerRow, userId: string) => {
     if (!podId || !authUid) return;
     try {
-      const { error } = await supabase
-        .from('blocker_help_invites')
-        .insert([
-          {
-            pod_id: podId,
-            blocker_id: blocker.id,
-            inviter_user_id: authUid,
-            target_user_id: userId,
-            status: 'pending',
-          },
-        ]);
+      const { error } = await supabase.from('blocker_help_invites').insert([
+        {
+          pod_id: podId,
+          blocker_id: blocker.id,
+          inviter_user_id: authUid,
+          target_user_id: userId,
+          status: 'pending',
+        },
+      ]);
       if (error && (error as any).code !== '23505') throw error; // ignore duplicate
       setInvitesByBlocker((prev) => {
         const copy = { ...prev };
@@ -1118,7 +1535,6 @@ export default function BlockersScreen() {
 
       if (error) throw error;
 
-      // Optimistic UI
       setBlockers((prev) =>
         prev.map((b) => (b.id === id ? { ...b, status: 'resolved' } : b))
       );
@@ -1138,7 +1554,6 @@ export default function BlockersScreen() {
       });
       if (error) throw error;
 
-      // optimistic UI
       setBlockers((prev) =>
         prev.map((x) =>
           x.id === blocker.id
@@ -1280,6 +1695,7 @@ export default function BlockersScreen() {
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -1293,8 +1709,10 @@ export default function BlockersScreen() {
             style={styles.header}
           >
             <Text style={styles.title}>Blockers</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <JiraBadgeOrButton />
+
+            <View
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
+            >
               {pendingForMeCount > 0 && (
                 <View style={styles.requestPill}>
                   <Text style={styles.requestPillText}>
@@ -1302,17 +1720,10 @@ export default function BlockersScreen() {
                   </Text>
                 </View>
               )}
-              <TouchableOpacity
-                style={styles.addButton}
-                onPress={() => setShowCreateModal(true)}
-                disabled={!podId}
-              >
-                <Plus color="#000000" size={20} />
-              </TouchableOpacity>
             </View>
           </Animated.View>
 
-          {/* Status chips (existing) */}
+          {/* Status chips */}
           <View style={styles.statsStrip}>
             <View style={[styles.statChip, { backgroundColor: '#2a1313' }]}>
               <View
@@ -1343,7 +1754,7 @@ export default function BlockersScreen() {
             </View>
           </View>
 
-          {/* New view chips */}
+          {/* View chips */}
           <View style={{ flexDirection: 'row', gap: 8, marginBottom: 10 }}>
             {(['all', 'forYou', 'mine'] as const).map((v) => (
               <TouchableOpacity
@@ -1366,24 +1777,33 @@ export default function BlockersScreen() {
           {/* Composer */}
           <BlurView intensity={20} style={styles.composerGlass}>
             <View style={styles.composerRow}>
-              <TextInput
-                value={composeText}
-                onChangeText={(t) => {
-                  setComposeText(t);
-                  if (t.length > 2) runTriage(t);
-                  else setTriage(null);
-                }}
-                placeholder={
-                  podId
-                    ? "What's blocking you? (one line)"
-                    : 'Join a pod to raise blockers'
-                }
-                placeholderTextColor="#888"
-                style={styles.composerInput}
-                returnKeyType="send"
-                onSubmitEditing={() => (podId ? openModalPrefilled() : null)}
-                editable={!!podId}
-              />
+              <Pressable
+                style={{ flex: 1 }}
+                onPress={() => inputRef.current?.focus()}
+                onLongPress={() => (podId ? openModalPrefilled() : null)}
+                delayLongPress={300}
+              >
+                <TextInput
+                  ref={inputRef}
+                  value={composeText}
+                  onChangeText={(t) => {
+                    setComposeText(t);
+                    if (t.length > 2) runTriage(t);
+                    else setTriage(null);
+                  }}
+                  placeholder={
+                    podId
+                      ? "What's blocking you? (one line)"
+                      : 'Join a pod to raise blockers'
+                  }
+                  placeholderTextColor="#888"
+                  style={styles.composerInput}
+                  returnKeyType="send"
+                  onSubmitEditing={() => (podId ? openModalPrefilled() : null)}
+                  editable={!!podId}
+                />
+              </Pressable>
+
               <TouchableOpacity
                 style={styles.raiseBtn}
                 onPress={openModalPrefilled}
@@ -1437,7 +1857,7 @@ export default function BlockersScreen() {
           {/* List */}
           {filtered.map((b, i) => {
             const owner = authUid && b.user_id === authUid;
-            const myReq = myHelp[b.id]; // volunteer status for me
+            const myReq = myHelp[b.id];
             const iAmHelper = authUid && b.helper_user_id === authUid;
             const canVolunteer =
               !owner &&
@@ -1486,10 +1906,9 @@ export default function BlockersScreen() {
                     </View>
 
                     <Text style={styles.blockerTitle}>{b.title}</Text>
+
                     {!!b.description && (
-                      <Text style={styles.blockerDescription}>
-                        {b.description}
-                      </Text>
+                      <RichDescription text={b.description} />
                     )}
 
                     {b.status === 'open' && (
@@ -1512,7 +1931,13 @@ export default function BlockersScreen() {
 
                     {/* Jira links */}
                     {jiraLinks.length > 0 && (
-                      <View style={{ marginBottom: 8, flexDirection: 'row', flexWrap: 'wrap' }}>
+                      <View
+                        style={{
+                          marginBottom: 8,
+                          flexDirection: 'row',
+                          flexWrap: 'wrap',
+                        }}
+                      >
                         {jiraLinks.map((jl) => (
                           <TouchableOpacity
                             key={`${b.id}-jira-${jl.issue_key}`}
@@ -1652,21 +2077,20 @@ export default function BlockersScreen() {
                             setJiraOpen(true);
                           }}
                         >
-                          <Text style={styles.footerBtnSecondaryText}>
-                            Attach Jira
-                          </Text>
-                        </TouchableOpacity>
-                      )}
-
-                      {/* Quick "View Repo Tree" using first link if present */}
-                      {ghLinks.length > 0 && (
-                        <TouchableOpacity
-                          style={styles.footerBtnSecondary}
-                          onPress={() => openRepoTreeFromUrl(ghLinks[0].url)}
-                        >
-                          <Text style={styles.footerBtnSecondaryText}>
-                            View Repo Tree
-                          </Text>
+                          <View
+                            style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              gap: 6,
+                            }}
+                          >
+                            <Text style={styles.footerBtnSecondaryText}>
+                              Attach Jira
+                            </Text>
+                            {jiraConnected && (
+                              <View style={styles.connectedDot} />
+                            )}
+                          </View>
                         </TouchableOpacity>
                       )}
 
@@ -1703,83 +2127,97 @@ export default function BlockersScreen() {
           })}
         </ScrollView>
 
-        {/* Create modal */}
+        {/* Create modal (keyboard-aware + tap-to-dismiss) */}
         <Modal
           visible={showCreateModal}
           transparent
           animationType="none"
           onRequestClose={() => setShowCreateModal(false)}
         >
-          <BlurView intensity={40} style={styles.modalOverlay}>
-            <Animated.View
-              entering={FadeInUp.springify()}
-              style={styles.modalContainer}
-            >
-              <BlurView intensity={30} style={styles.modalGlass}>
-                <View style={styles.modal}>
-                  <View style={styles.modalHeader}>
-                    <View style={styles.modalTitleRow}>
-                      <Lightbulb color="#ffffff" size={20} />
-                      <Text style={styles.modalTitle}>
-                        Describe Your Blocker
-                      </Text>
+          <TouchableWithoutFeedback
+            onPress={Keyboard.dismiss}
+            accessible={false}
+          >
+            <View style={styles.modalOverlay}>
+              <KeyboardAvoidingView
+                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                keyboardVerticalOffset={80}
+                style={{ width: width - 40, maxHeight: height * 0.8 }}
+              >
+                <Animated.View
+                  entering={FadeInUp.springify()}
+                  style={styles.modalContainer}
+                >
+                  <BlurView intensity={30} style={styles.modalGlass}>
+                    <View style={styles.modal}>
+                      <View style={styles.modalHeader}>
+                        <View style={styles.modalTitleRow}>
+                          <Lightbulb color="#ffffff" size={20} />
+                          <Text style={styles.modalTitle}>
+                            Describe Your Blocker
+                          </Text>
+                        </View>
+                        <TouchableOpacity
+                          style={styles.closeButton}
+                          onPress={() => setShowCreateModal(false)}
+                        >
+                          <X color="#ffffff" size={20} />
+                        </TouchableOpacity>
+                      </View>
+
+                      <TextInput
+                        style={styles.blockerInput}
+                        placeholder="What's blocking you? Be specific about the tech stack, error messages, or concept…"
+                        placeholderTextColor="#666666"
+                        value={blockerText}
+                        onChangeText={(t) => {
+                          setBlockerText(t);
+                          if (t.length > 2) runTriage(t);
+                          else setTriage(null);
+                        }}
+                        multiline
+                        numberOfLines={6}
+                        textAlignVertical="top"
+                        editable={!creating}
+                        blurOnSubmit
+                        returnKeyType="done"
+                        onSubmitEditing={Keyboard.dismiss}
+                      />
+
+                      {triage && (
+                        <View
+                          style={[
+                            styles.aiHint,
+                            { marginTop: 0, marginBottom: 16 },
+                          ]}
+                        >
+                          <Lightbulb size={14} color="#ffd966" />
+                          <Text style={styles.aiHintText}>{triage.note}</Text>
+                        </View>
+                      )}
+
+                      <Animated.View style={buttonAnimatedStyle}>
+                        <TouchableOpacity
+                          style={[
+                            styles.createButton,
+                            creating && { opacity: 0.85 },
+                          ]}
+                          onPress={handleCreateBlocker}
+                          activeOpacity={0.8}
+                          disabled={creating}
+                        >
+                          <Send color="#000000" size={18} />
+                          <Text style={styles.createButtonText}>
+                            {creating ? 'Creating…' : 'Find Helpers'}
+                          </Text>
+                        </TouchableOpacity>
+                      </Animated.View>
                     </View>
-                    <TouchableOpacity
-                      style={styles.closeButton}
-                      onPress={() => setShowCreateModal(false)}
-                    >
-                      <X color="#ffffff" size={20} />
-                    </TouchableOpacity>
-                  </View>
-
-                  <TextInput
-                    style={styles.blockerInput}
-                    placeholder="What's blocking you? Be specific about the tech stack, error messages, or concept…"
-                    placeholderTextColor="#666666"
-                    value={blockerText}
-                    onChangeText={(t) => {
-                      setBlockerText(t);
-                      if (t.length > 2) runTriage(t);
-                      else setTriage(null);
-                    }}
-                    multiline
-                    numberOfLines={6}
-                    textAlignVertical="top"
-                    editable={!creating}
-                  />
-
-                  {triage && (
-                    <View
-                      style={[
-                        styles.aiHint,
-                        { marginTop: 0, marginBottom: 16 },
-                      ]}
-                    >
-                      <Lightbulb size={14} color="#ffd966" />
-                      <Text style={styles.aiHintText}>{triage.note}</Text>
-                    </View>
-                  )}
-
-                  <Animated.View style={buttonAnimatedStyle}>
-                    <TouchableOpacity
-                      style={[
-                        styles.createButton,
-                        creating && { opacity: 0.85 },
-                      ]}
-                      onPress={handleCreateBlocker}
-                      activeOpacity={0.8}
-                      disabled={creating}
-                    >
-                      <Send color="#000000" size={18} />
-                      <Text style={styles.createButtonText}>
-                        {creating ? 'Creating…' : 'Find Helpers'}
-                      </Text>
-                    </TouchableOpacity>
-                  </Animated.View>
-                </View>
-              </BlurView>
-            </Animated.View>
-          </BlurView>
+                  </BlurView>
+                </Animated.View>
+              </KeyboardAvoidingView>
+            </View>
+          </TouchableWithoutFeedback>
         </Modal>
 
         {/* Ask-for-help modal (owner) */}
@@ -2002,8 +2440,11 @@ export default function BlockersScreen() {
                     </TouchableOpacity>
                   </View>
 
-                  <Text style={{ color: '#9aa0a6', fontSize: 12, marginBottom: 8 }}>
-                    Paste a GitHub Issue/PR/Commit/Repo/Folder/File URL (e.g. https://github.com/owner/repo/blob/main/app/index.tsx)
+                  <Text
+                    style={{ color: '#9aa0a6', fontSize: 12, marginBottom: 8 }}
+                  >
+                    Paste a GitHub Issue/PR/Commit/Repo/Folder/File URL (e.g.
+                    https://github.com/owner/repo/blob/main/app/index.tsx)
                   </Text>
 
                   <TextInput
@@ -2024,23 +2465,32 @@ export default function BlockersScreen() {
                   />
 
                   <TouchableOpacity
-                    style={[styles.createButton, attachBusy && { opacity: 0.85, marginTop: 12 }]}
+                    style={[
+                      styles.createButton,
+                      attachBusy && { opacity: 0.85, marginTop: 12 },
+                    ]}
                     disabled={attachBusy}
                     onPress={async () => {
                       if (!podId || !attachFor) return;
                       if (!attachUrl.trim()) {
-                        Alert.alert('Missing URL', 'Please paste a GitHub URL.');
+                        Alert.alert(
+                          'Missing URL',
+                          'Please paste a GitHub URL.'
+                        );
                         return;
                       }
                       try {
                         setAttachBusy(true);
-                        const { data, error } = await supabase.rpc('add_github_link', {
-                          p_pod_id: podId,
-                          p_url: attachUrl.trim(),
-                          p_blocker_id: attachFor.id,
-                          p_title: attachTitle.trim() || null,
-                          p_metadata: {},
-                        });
+                        const { data, error } = await supabase.rpc(
+                          'add_github_link',
+                          {
+                            p_pod_id: podId,
+                            p_url: attachUrl.trim(),
+                            p_blocker_id: attachFor.id,
+                            p_title: attachTitle.trim() || null,
+                            p_metadata: {},
+                          }
+                        );
                         if (error) throw error;
                         const created = data as GithubLink;
                         setLinksByBlocker((prev) => {
@@ -2054,7 +2504,10 @@ export default function BlockersScreen() {
                         });
                         setAttachOpen(false);
                       } catch (e: any) {
-                        Alert.alert('Attach failed', e?.message ?? 'Could not attach link.');
+                        Alert.alert(
+                          'Attach failed',
+                          e?.message ?? 'Could not attach link.'
+                        );
                       } finally {
                         setAttachBusy(false);
                       }
@@ -2095,8 +2548,17 @@ export default function BlockersScreen() {
 
                   {jiraConnected ? (
                     <>
-                      <Text style={{ color: '#cfe0ff', fontSize: 12, marginBottom: 6 }}>
-                        Link an existing issue <Text style={{ fontWeight: '700' }}>(ISSUE-123 or URL)</Text>
+                      <Text
+                        style={{
+                          color: '#cfe0ff',
+                          fontSize: 12,
+                          marginBottom: 6,
+                        }}
+                      >
+                        Link an existing issue{' '}
+                        <Text style={{ fontWeight: '700' }}>
+                          (ISSUE-123 or URL)
+                        </Text>
                       </Text>
                       <TextInput
                         value={jiraKeyOrUrl}
@@ -2107,20 +2569,31 @@ export default function BlockersScreen() {
                         autoCapitalize="characters"
                       />
                       <TouchableOpacity
-                        style={[styles.createButton, jiraBusy && { opacity: 0.85, marginTop: 12 }]}
+                        style={[
+                          styles.createButton,
+                          jiraBusy && { opacity: 0.85, marginTop: 12 },
+                        ]}
                         disabled={jiraBusy}
                         onPress={async () => {
                           if (!jiraFor || !podId) return;
                           if (!jiraKeyOrUrl.trim()) {
-                            Alert.alert('Missing issue', 'Enter an ISSUE-KEY or paste a Jira URL.');
+                            Alert.alert(
+                              'Missing issue',
+                              'Enter an ISSUE-KEY or paste a Jira URL.'
+                            );
                             return;
                           }
                           try {
                             setJiraBusy(true);
-                            const link = await jiraLinkIssue(jiraFor.id, jiraKeyOrUrl.trim());
+                            const link = await jiraLinkIssue(
+                              jiraFor.id,
+                              jiraKeyOrUrl.trim()
+                            );
                             setJiraByBlocker((prev) => {
                               const arr = [...(prev[jiraFor.id] ?? [])];
-                              if (!arr.find((x) => x.issue_key === link.issue_key)) {
+                              if (
+                                !arr.find((x) => x.issue_key === link.issue_key)
+                              ) {
                                 arr.unshift({
                                   blocker_id: jiraFor.id,
                                   issue_key: link.issue_key,
@@ -2133,7 +2606,10 @@ export default function BlockersScreen() {
                             });
                             setJiraOpen(false);
                           } catch (e: any) {
-                            Alert.alert('Jira', e?.message ?? 'Could not link issue.');
+                            Alert.alert(
+                              'Jira',
+                              e?.message ?? 'Could not link issue.'
+                            );
                           } finally {
                             setJiraBusy(false);
                           }
@@ -2146,7 +2622,13 @@ export default function BlockersScreen() {
 
                       <View style={{ height: 14 }} />
 
-                      <Text style={{ color: '#cfe0ff', fontSize: 12, marginBottom: 6 }}>
+                      <Text
+                        style={{
+                          color: '#cfe0ff',
+                          fontSize: 12,
+                          marginBottom: 6,
+                        }}
+                      >
                         Or create a new issue
                       </Text>
                       <TextInput
@@ -2165,12 +2647,18 @@ export default function BlockersScreen() {
                         style={[styles.searchInput, { marginTop: 8 }]}
                       />
                       <TouchableOpacity
-                        style={[styles.createButton, jiraBusy && { opacity: 0.85, marginTop: 12 }]}
+                        style={[
+                          styles.createButton,
+                          jiraBusy && { opacity: 0.85, marginTop: 12 },
+                        ]}
                         disabled={jiraBusy}
                         onPress={async () => {
                           if (!jiraFor || !podId) return;
                           if (!jiraProjectKey.trim() || !jiraSummary.trim()) {
-                            Alert.alert('Missing details', 'Enter a project key and summary.');
+                            Alert.alert(
+                              'Missing details',
+                              'Enter a project key and summary.'
+                            );
                             return;
                           }
                           try {
@@ -2183,7 +2671,9 @@ export default function BlockersScreen() {
                             );
                             setJiraByBlocker((prev) => {
                               const arr = [...(prev[jiraFor.id] ?? [])];
-                              if (!arr.find((x) => x.issue_key === link.issue_key)) {
+                              if (
+                                !arr.find((x) => x.issue_key === link.issue_key)
+                              ) {
                                 arr.unshift({
                                   blocker_id: jiraFor.id,
                                   issue_key: link.issue_key,
@@ -2196,7 +2686,10 @@ export default function BlockersScreen() {
                             });
                             setJiraOpen(false);
                           } catch (e: any) {
-                            Alert.alert('Jira', e?.message ?? 'Could not create issue.');
+                            Alert.alert(
+                              'Jira',
+                              e?.message ?? 'Could not create issue.'
+                            );
                           } finally {
                             setJiraBusy(false);
                           }
@@ -2209,7 +2702,13 @@ export default function BlockersScreen() {
                     </>
                   ) : (
                     <View style={{ alignItems: 'center' }}>
-                      <Text style={{ color: '#cfcfcf', marginBottom: 12, textAlign: 'center' }}>
+                      <Text
+                        style={{
+                          color: '#cfcfcf',
+                          marginBottom: 12,
+                          textAlign: 'center',
+                        }}
+                      >
                         Connect your Jira account to link or create issues.
                       </Text>
                       <ConnectJiraButton returnTo="/blockers?refreshConnections=1" />
@@ -2250,14 +2749,6 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   title: { fontSize: 28, fontFamily: 'Inter-SemiBold', color: '#ffffff' },
-  addButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#ffffff',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
 
   // Header pill
   requestPill: {
@@ -2325,6 +2816,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#ffffff',
   },
   raiseBtnText: { color: '#000', fontWeight: '700' },
+  connectedDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#1f6feb',
+  },
 
   // Triage
   triageRow: { marginTop: 10 },
@@ -2366,13 +2863,19 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
+    position: 'relative'
   },
-  blockerCard: { padding: 20 },
+  blockerCard: {
+    padding: 20,
+    position: 'relative',
+    overflow: 'hidden',
+  },
   blockerHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 12,
+    zIndex: 2,
   },
   statusRow: { flexDirection: 'row', alignItems: 'center' },
   statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 8 },
@@ -2390,13 +2893,15 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter-SemiBold',
     color: '#ffffff',
     marginBottom: 8,
+    zIndex: 2,
+    
   },
+
   blockerDescription: {
     fontSize: 14,
     fontFamily: 'Inter-Regular',
     color: '#cccccc',
     lineHeight: 20,
-    marginBottom: 12,
   },
 
   aiHint: {
@@ -2409,6 +2914,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,217,102,0.25)',
     marginBottom: 12,
+    marginTop: 8,
   },
   aiHintText: { color: '#f5f0dc', flex: 1, fontSize: 12, lineHeight: 18 },
 
@@ -2630,3 +3136,184 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
 });
+
+const codeStyles = StyleSheet.create({
+  outerWrap: {
+    marginBottom: 12,
+    borderRadius: 14,
+    position: 'relative',
+  },
+  borderGlow: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 14,
+    opacity: 0.4,
+  },
+  wrap: {
+    borderRadius: 14,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.10)',
+    backgroundColor: '#0f1216',      // deeper canvas
+    shadowColor: '#000',
+    shadowOpacity: 0.28,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 3,
+  },
+  
+  header: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  headerCenter: { flex: 1, alignItems: 'center' },
+  headerRight: { flexDirection: 'row', gap: 8 },
+  
+  langPill: {
+    color: '#cfe0ff',
+    fontSize: 11,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(31,111,235,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(31,111,235,0.35)',
+    overflow: 'hidden',
+  },
+  
+  /* small rectangular button in header (Copy) */
+  toolBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+  },
+  toolBtnActive: {
+    backgroundColor: 'rgba(89,217,133,0.16)',
+    borderColor: 'rgba(89,217,133,0.4)',
+  },
+  toolBtnText: { color: '#fff', fontWeight: '800', fontSize: 12 },
+  
+  /* toolbar under header */
+  toolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    paddingBottom: 6,
+    borderBottomWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+    backgroundColor: 'rgba(255,255,255,0.02)',
+  },
+  toolChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  toolChipActive: {
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderColor: 'rgba(255,255,255,0.22)',
+  },
+  toolChipText: { color: '#e6edf3', fontWeight: '700', fontSize: 12 },
+  toolChipTextActive: { color: '#fff' },
+  
+  /* body + scrolling */
+  body: { position: 'relative' },
+  bodyCollapsed: { maxHeight: 260 },
+  vscroll: { maxWidth: '100%' },
+  codeRow: { flexDirection: 'row', alignItems: 'flex-start' },
+  gutter: {
+    paddingLeft: 12,
+    paddingRight: 10,
+    paddingTop: 2,
+    borderRightWidth: 1,
+    borderRightColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.03)',
+  },
+  gutterText: {
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }) as any,
+    fontSize: 11,
+    lineHeight: 20,
+    color: '#8a9199',
+    textAlign: 'right',
+  },
+  hscroll: { flexGrow: 1 },
+  
+  /* fade at bottom when collapsed */
+  fade: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 56,
+  },
+  
+  codeCol: {
+    paddingLeft: 10,
+    paddingRight: 12,
+    paddingTop: 2,
+    flexShrink: 1,
+  },
+
+  winDotsRow: { flexDirection: 'row', gap: 6, alignItems: 'center' },
+  winDot: { width: 10, height: 10, borderRadius: 5, opacity: 0.9 },
+  copyBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+  },
+  copyText: { color: '#fff', fontWeight: '800', fontSize: 12 },
+
+  // Footer
+  footerBtn: {
+    alignSelf: 'flex-end',
+    margin: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
+  },
+  footerBtnText: { color: '#e6edf3', fontWeight: '800', fontSize: 12 },
+  inlineTextInText: {
+    fontFamily: 'Menlo',
+    fontSize: 12,
+    color: '#e6edf3',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderColor: 'rgba(255,255,255,0.16)',
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    // paddingVertical on Text stays inline without breaking layout
+  },
+
+  // Inline-code (unchanged API, nicer styling)
+  inline: {
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderColor: 'rgba(255,255,255,0.16)',
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  inlineText: {
+    color: '#e6edf3',
+    fontFamily: 'Menlo',
+    fontSize: 12,
+  },
+});
+
