@@ -755,9 +755,10 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.06)',
     paddingVertical: 10,
   },
-  
+
   logWho: { color: '#fff', fontWeight: '700', marginBottom: 4 },
   logLine: { color: '#bdbdbd' },
   logBlocker: { color: '#ffb4b4' },
   logAgo: { color: '#a8a8a8', marginLeft: 12 },
 });
+  
