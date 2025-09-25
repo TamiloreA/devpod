@@ -762,3 +762,4 @@ const styles = StyleSheet.create({
   logAgo: { color: '#a8a8a8', marginLeft: 12 },
 });
   
+
