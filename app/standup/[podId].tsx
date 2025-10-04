@@ -1,23 +1,51 @@
-import React from 'react';
-import { View, Text, StyleSheet, Pressable } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, ActivityIndicator } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
+import { supabase } from '@/lib/supabase';
+import StandupRoom from '@/components/StandupRoom';
 
-export default function StandupRoom() {
+export default function StandupScreen() {
   const { podId } = useLocalSearchParams<{ podId: string }>();
+  const [uid, setUid] = useState<string | null>(null);
+  const [profile, setProfile] = useState<{ id: string; display_name: string | null } | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const { data: auth } = await supabase.auth.getUser();
+      const id = auth.user?.id ?? null;
+      setUid(id);
+      if (!id) return;
+      const { data: prof } = await supabase
+        .from('profiles')
+        .select('id, display_name')
+        .eq('id', id)
+        .maybeSingle();
+      setProfile(prof ?? null);
+    })();
+  }, []);
+
+  if (!podId) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+        <Text style={{ color: '#fff' }}>Missing podId</Text>
+      </View>
+    );
+  }
+
+  if (!uid) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+        <ActivityIndicator />
+      </View>
+    );
+  }
+
   return (
-    <View style={styles.c}>
-      <Text style={styles.h}>Standup Room</Text>
-      <Text style={styles.p}>Pod: {podId}</Text>
-      <Pressable onPress={() => router.back()} style={styles.b}>
-        <Text style={{ fontWeight: '700' }}>Close</Text>
-      </Pressable>
-    </View>
+    <StandupRoom
+      podId={String(podId)}
+      selfId={uid}
+      selfName={profile?.display_name ?? 'You'}
+      onLeave={() => router.back()}
+    />
   );
 }
-
-const styles = StyleSheet.create({
-  c: { flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' },
-  h: { color: '#fff', fontSize: 22, marginBottom: 6 },
-  p: { color: '#bbb', marginBottom: 20 },
-  b: { backgroundColor: '#fff', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 10 },
-});
