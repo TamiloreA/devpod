@@ -1,6 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, ScrollView, StyleSheet, Platform } from 'react-native';
 import { supabase } from '@/lib/supabase';
+import { getLiveKitToken } from '@/lib/livekit';
+import {
+  Room,
+  RoomEvent,
+  LocalTrackPublication,
+  Track,
+  createLocalAudioTrack,
+} from 'livekit-client';
+import { request, PERMISSIONS, RESULTS } from 'react-native-permissions';
 
 type PresenceUser = {
   id: string;
@@ -10,12 +19,13 @@ type PresenceUser = {
 };
 
 type RoomState = {
+  version: number;
   hostId: string | null;
-  queue: string[];  
-  idx: number;    
+  queue: string[];
+  idx: number;
   isPaused: boolean;
-  endsAt: number | null; 
-  slotSecs: number;  
+  endsAt: number | null;
+  slotSecs: number;
 };
 
 type Props = {
@@ -27,10 +37,22 @@ type Props = {
 
 const SLOT_DEFAULT = 60;
 
+async function requestMicPermission() {
+  if (Platform.OS === 'ios') {
+    const res = await request(PERMISSIONS.IOS.MICROPHONE);
+    if (res !== RESULTS.GRANTED) throw new Error('Microphone permission denied');
+  } else if (Platform.OS === 'android') {
+    const res = await request(PERMISSIONS.ANDROID.RECORD_AUDIO);
+    if (res !== RESULTS.GRANTED) throw new Error('Microphone permission denied');
+  } else {
+  }
+}
+
 export default function StandupRoom({ podId, selfId, selfName, onLeave }: Props) {
   const [channel, setChannel] = useState<ReturnType<typeof supabase.channel> | null>(null);
   const [peers, setPeers] = useState<Record<string, PresenceUser>>({});
   const [state, setState] = useState<RoomState>({
+    version: 0,
     hostId: null,
     queue: [],
     idx: 0,
@@ -40,8 +62,13 @@ export default function StandupRoom({ podId, selfId, selfName, onLeave }: Props)
   });
   const [now, setNow] = useState(Date.now());
 
+  const [lkRoom, setLkRoom] = useState<Room | null>(null);
+  const audioPubRef = useRef<LocalTrackPublication | null>(null);
+
   const stateRef = useRef(state);
   const peersRef = useRef(peers);
+  const readyRef = useRef(false);
+
   useEffect(() => { stateRef.current = state; }, [state]);
   useEffect(() => { peersRef.current = peers; }, [peers]);
 
@@ -52,9 +79,45 @@ export default function StandupRoom({ podId, selfId, selfName, onLeave }: Props)
 
   const broadcastState = (nextPartial: Partial<RoomState> = {}) => {
     if (!channel) return;
-    const merged: RoomState = { ...stateRef.current, ...nextPartial };
+    const current = stateRef.current;
+    const merged: RoomState = {
+      ...current,
+      ...nextPartial,
+      version: (current.version ?? 0) + 1,
+    };
     setState(merged);
     channel.send({ type: 'broadcast', event: 'room_state', payload: merged });
+  };
+
+  const ensureMic = async (shouldBeOn: boolean) => {
+    if (!lkRoom) return;
+    try {
+      let pub = audioPubRef.current
+        ?? (lkRoom.localParticipant.getTrackPublications()
+            .find((p) => p.kind === Track.Kind.Audio) as LocalTrackPublication | undefined)
+        ?? null;
+
+      if (shouldBeOn) {
+        if (pub) {
+          if (pub.isMuted) await pub.unmute();
+          audioPubRef.current = pub;
+          return;
+        }
+        const track = await createLocalAudioTrack({
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        });
+        const createdPub = (await lkRoom.localParticipant.publishTrack(track)) as LocalTrackPublication;
+        audioPubRef.current = createdPub;
+      } else {
+        if (pub && !pub.isMuted) {
+          await pub.mute();
+        }
+      }
+    } catch (e) {
+      console.warn('ensureMic error', e);
+    }
   };
 
   useEffect(() => {
@@ -84,7 +147,10 @@ export default function StandupRoom({ podId, selfId, selfName, onLeave }: Props)
 
     ch.on('broadcast', { event: 'room_state' }, (payload) => {
       const next = payload.payload as RoomState;
-      setState((prev) => ({ ...prev, ...next }));
+      const cur = stateRef.current;
+      if ((next.version ?? 0) >= (cur.version ?? 0)) {
+        setState(next); 
+      }
     });
 
     ch.on('broadcast', { event: 'req_state' }, () => {
@@ -100,6 +166,7 @@ export default function StandupRoom({ podId, selfId, selfName, onLeave }: Props)
 
       if (msg.type === 'reset') {
         const next: RoomState = {
+          version: (s.version ?? 0) + 1,
           hostId: msg.hostId ?? s.hostId,
           queue: msg.queue ?? [],
           idx: 0,
@@ -116,7 +183,13 @@ export default function StandupRoom({ podId, selfId, selfName, onLeave }: Props)
           const hasQueue = s.queue.length > 0;
           const nextIdx = hasQueue ? (s.idx + 1) % s.queue.length : 0;
           const endsAt = hasQueue ? Date.now() + s.slotSecs * 1000 : null;
-          const merged: RoomState = { ...s, idx: nextIdx, isPaused: !endsAt, endsAt: endsAt ?? null };
+          const merged: RoomState = {
+            ...s,
+            version: (s.version ?? 0) + 1,
+            idx: nextIdx,
+            isPaused: !endsAt,
+            endsAt: endsAt ?? null,
+          };
           setState(merged);
           ch.send({ type: 'broadcast', event: 'room_state', payload: merged });
         }
@@ -126,12 +199,14 @@ export default function StandupRoom({ podId, selfId, selfName, onLeave }: Props)
     ch.subscribe(async (status) => {
       if (status === 'SUBSCRIBED') {
         await ch.track({ id: selfId, name: selfName, joinedAt: Date.now(), muted: false });
+        readyRef.current = true;
         ch.send({ type: 'broadcast', event: 'req_state', payload: { requester: selfId, ts: Date.now() } });
       }
     });
 
     setChannel(ch);
     return () => {
+      readyRef.current = false;
       ch.unsubscribe();
       setChannel(null);
     };
@@ -139,19 +214,28 @@ export default function StandupRoom({ podId, selfId, selfName, onLeave }: Props)
 
   useEffect(() => {
     if (state.hostId && !peers[state.hostId]) {
-      setState((s) => ({ ...s, hostId: null, isPaused: true, endsAt: null }));
+      setState((s) => ({
+        ...s,
+        version: (s.version ?? 0) + 1,
+        hostId: null,
+        isPaused: true,
+        endsAt: null,
+      }));
     }
   }, [peers, state.hostId]);
 
   const isHost = state.hostId === selfId;
 
   const electHostIfNone = () => {
+    if (!readyRef.current) return;
     if (!stateRef.current.hostId) broadcastState({ hostId: selfId });
   };
 
   const startStandup = () => {
     const ids = Object.keys(peersRef.current);
-    const sorted = ids.sort((a, b) => (peersRef.current[a].joinedAt || 0) - (peersRef.current[b].joinedAt || 0));
+    const sorted = ids.sort(
+      (a, b) => (peersRef.current[a].joinedAt || 0) - (peersRef.current[b].joinedAt || 0),
+    );
     const endsAt = Date.now() + stateRef.current.slotSecs * 1000;
     if (!stateRef.current.hostId) {
       broadcastState({ hostId: selfId, queue: sorted, idx: 0, isPaused: false, endsAt });
@@ -189,6 +273,7 @@ export default function StandupRoom({ podId, selfId, selfName, onLeave }: Props)
     ? state.slotSecs
     : Math.max(0, Math.ceil((state.endsAt - now) / 1000));
   const someoneSpeaking = !state.isPaused && !!currentId;
+  const iAmCurrent = someoneSpeaking && currentId === selfId;
 
   useEffect(() => {
     if (!someoneSpeaking) return;
@@ -196,6 +281,69 @@ export default function StandupRoom({ podId, selfId, selfName, onLeave }: Props)
   }, [timeLeft, someoneSpeaking, isHost]);
 
   const roster = useMemo(() => Object.values(peers), [peers]);
+
+  useEffect(() => {
+    let isCancelled = false;
+    let room: Room | null = null;
+
+    (async () => {
+      try {
+        await requestMicPermission();
+
+        const { token, url } = await getLiveKitToken({
+          room: `standup-${podId}`,
+          displayName: selfName,
+        });
+
+        room = new Room({
+          adaptiveStream: true,
+          dynacast: true,
+          publishDefaults: { 
+            dtx: true,
+          },
+          audioCaptureDefaults: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+        room
+          .on(RoomEvent.ConnectionStateChanged, (s) => {
+          })
+          .on(RoomEvent.TrackSubscribed, () => {
+          })
+          .on(RoomEvent.Disconnected, () => {
+            // console.log('LK disconnected');
+          });
+
+        await room.connect(url, token, { autoSubscribe: true });
+        if (isCancelled) {
+          await room.disconnect();
+          return;
+        }
+        setLkRoom(room);
+      } catch (e) {
+        console.warn('LiveKit connect error', e);
+      }
+    })();
+
+    return () => {
+      isCancelled = true;
+      (async () => {
+        try {
+          if (audioPubRef.current) {
+            try { await audioPubRef.current.mute(); } catch {}
+            audioPubRef.current = null;
+          }
+          if (room) await room.disconnect();
+        } catch {}
+      })();
+    };
+  }, [podId, selfName]);
+
+  useEffect(() => {
+    ensureMic(iAmCurrent && !state.isPaused).catch(() => {});
+  }, [iAmCurrent, state.isPaused, lkRoom]);
 
   return (
     <View style={styles.container}>
