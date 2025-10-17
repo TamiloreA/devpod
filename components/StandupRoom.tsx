@@ -9,7 +9,8 @@ import {
   Track,
   createLocalAudioTrack,
 } from 'livekit-client';
-import { request, PERMISSIONS, RESULTS } from 'react-native-permissions';
+import { Audio } from 'expo-av';
+
 
 type PresenceUser = {
   id: string;
@@ -38,15 +39,12 @@ type Props = {
 const SLOT_DEFAULT = 60;
 
 async function requestMicPermission() {
-  if (Platform.OS === 'ios') {
-    const res = await request(PERMISSIONS.IOS.MICROPHONE);
-    if (res !== RESULTS.GRANTED) throw new Error('Microphone permission denied');
-  } else if (Platform.OS === 'android') {
-    const res = await request(PERMISSIONS.ANDROID.RECORD_AUDIO);
-    if (res !== RESULTS.GRANTED) throw new Error('Microphone permission denied');
-  } else {
+  const { granted, status } = await Audio.requestPermissionsAsync();
+  if (!granted) {
+    throw new Error(`Microphone permission ${status}`);
   }
 }
+
 
 export default function StandupRoom({ podId, selfId, selfName, onLeave }: Props) {
   const [channel, setChannel] = useState<ReturnType<typeof supabase.channel> | null>(null);
