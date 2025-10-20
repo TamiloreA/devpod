@@ -19,29 +19,18 @@
       "bundleIdentifier": "com.tammya.bolt-expo-nativewind"
     },
     "android": {
+      "package": "com.tammya.boltexponativewind",
       "permissions": [
         "RECORD_AUDIO",
+        "CAMERA",
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "MODIFY_AUDIO_SETTINGS",
+        "WAKE_LOCK",
+        "BLUETOOTH",
         "BLUETOOTH_CONNECT",
-        "android.permission.ACCESS_NETWORK_STATE",
-        "android.permission.INTERNET",
-        "android.permission.MODIFY_AUDIO_SETTINGS",
-        "android.permission.WAKE_LOCK",
-        "android.permission.BLUETOOTH",
-        "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO",
-        "android.permission.SYSTEM_ALERT_WINDOW",
-        "RECORD_AUDIO",
-        "BLUETOOTH_CONNECT",
-        "android.permission.ACCESS_NETWORK_STATE",
-        "android.permission.INTERNET",
-        "android.permission.MODIFY_AUDIO_SETTINGS",
-        "android.permission.WAKE_LOCK",
-        "android.permission.BLUETOOTH",
-        "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO",
-        "android.permission.SYSTEM_ALERT_WINDOW"
-      ],
-      "package": "com.tammya.boltexponativewind"
+        "SYSTEM_ALERT_WINDOW"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -52,12 +41,18 @@
       "expo-router",
       "expo-font",
       "expo-web-browser",
-      "@livekit/react-native-expo-plugin",
+      [
+        "@config-plugins/react-native-webrtc",
+        {
+          "microphonePermission": "We use your mic so teammates can hear you during standup.",
+          "cameraPermission": "Not used for audio-only"
+        }
+      ],
       [
         "expo-build-properties",
         {
           "ios": {
-            "deploymentTarget": "14.0",
+            "deploymentTarget": "15.1",
             "useFrameworks": "static"
           }
         }

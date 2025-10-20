@@ -11,7 +11,6 @@ import {
 } from 'livekit-client';
 import { Audio } from 'expo-av';
 
-
 type PresenceUser = {
   id: string;
   name: string;
@@ -44,7 +43,6 @@ async function requestMicPermission() {
     throw new Error(`Microphone permission ${status}`);
   }
 }
-
 
 export default function StandupRoom({ podId, selfId, selfName, onLeave }: Props) {
   const [channel, setChannel] = useState<ReturnType<typeof supabase.channel> | null>(null);
@@ -87,20 +85,23 @@ export default function StandupRoom({ podId, selfId, selfName, onLeave }: Props)
     channel.send({ type: 'broadcast', event: 'room_state', payload: merged });
   };
 
+  // Prefer (un)publishing to fully release the mic when not speaking
   const ensureMic = async (shouldBeOn: boolean) => {
     if (!lkRoom) return;
     try {
-      let pub = audioPubRef.current
-        ?? (lkRoom.localParticipant.getTrackPublications()
-            .find((p) => p.kind === Track.Kind.Audio) as LocalTrackPublication | undefined)
-        ?? null;
+      let pub =
+        audioPubRef.current ??
+        (lkRoom.localParticipant
+          .getTrackPublications()
+          .find((p) => p.kind === Track.Kind.Audio) as LocalTrackPublication | undefined) ??
+        null;
 
       if (shouldBeOn) {
-        if (pub) {
-          if (pub.isMuted) await pub.unmute();
+        if (pub && !pub.isMuted) {
           audioPubRef.current = pub;
           return;
         }
+        // (re)create & publish mic
         const track = await createLocalAudioTrack({
           echoCancellation: true,
           noiseSuppression: true,
@@ -108,10 +109,17 @@ export default function StandupRoom({ podId, selfId, selfName, onLeave }: Props)
         });
         const createdPub = (await lkRoom.localParticipant.publishTrack(track)) as LocalTrackPublication;
         audioPubRef.current = createdPub;
-      } else {
-        if (pub && !pub.isMuted) {
-          await pub.mute();
-        }
+        return;
+      }
+
+      // Turn off mic completely when not the speaker
+      if (pub) {
+        try {
+          if (pub.track) {
+            await lkRoom.localParticipant.unpublishTrack(pub.track, true);
+          }
+        } catch {}
+        audioPubRef.current = null;
       }
     } catch (e) {
       console.warn('ensureMic error', e);
@@ -147,7 +155,7 @@ export default function StandupRoom({ podId, selfId, selfName, onLeave }: Props)
       const next = payload.payload as RoomState;
       const cur = stateRef.current;
       if ((next.version ?? 0) >= (cur.version ?? 0)) {
-        setState(next); 
+        setState(next);
       }
     });
 
@@ -288,6 +296,19 @@ export default function StandupRoom({ podId, selfId, selfName, onLeave }: Props)
       try {
         await requestMicPermission();
 
+        // ensure native audio session supports record + playback
+        try {
+          await Audio.setAudioModeAsync({
+            allowsRecordingIOS: true,
+            playsInSilentModeIOS: true,
+            staysActiveInBackground: false,
+            shouldDuckAndroid: true,
+            playThroughEarpieceAndroid: false,
+          });
+        } catch (e) {
+          console.warn('Audio.setAudioModeAsync failed', e);
+        }
+
         const { token, url } = await getLiveKitToken({
           room: `standup-${podId}`,
           displayName: selfName,
@@ -296,23 +317,18 @@ export default function StandupRoom({ podId, selfId, selfName, onLeave }: Props)
         room = new Room({
           adaptiveStream: true,
           dynacast: true,
-          publishDefaults: { 
-            dtx: true,
-          },
+          publishDefaults: { dtx: true },
           audioCaptureDefaults: {
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl: true,
           },
         });
+
         room
-          .on(RoomEvent.ConnectionStateChanged, (s) => {
-          })
-          .on(RoomEvent.TrackSubscribed, () => {
-          })
-          .on(RoomEvent.Disconnected, () => {
-            // console.log('LK disconnected');
-          });
+          .on(RoomEvent.ConnectionStateChanged, () => {})
+          .on(RoomEvent.TrackSubscribed, () => {})
+          .on(RoomEvent.Disconnected, () => {});
 
         await room.connect(url, token, { autoSubscribe: true });
         if (isCancelled) {
@@ -329,11 +345,13 @@ export default function StandupRoom({ podId, selfId, selfName, onLeave }: Props)
       isCancelled = true;
       (async () => {
         try {
-          if (audioPubRef.current) {
-            try { await audioPubRef.current.mute(); } catch {}
+          if (audioPubRef.current?.track) {
+            try {
+              await room?.localParticipant.unpublishTrack(audioPubRef.current.track, true);
+            } catch {}
             audioPubRef.current = null;
           }
-          if (room) await room.disconnect();
+          await room?.disconnect();
         } catch {}
       })();
     };

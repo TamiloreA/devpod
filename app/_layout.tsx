@@ -1,4 +1,6 @@
-import { useEffect, useState } from 'react';
+// app/_layout.tsx
+import React, { useEffect, useState } from 'react';
+import { Platform } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useFrameworkReady } from '@/hooks/useFrameworkReady';
@@ -11,6 +13,34 @@ import {
 import * as SplashScreen from 'expo-splash-screen';
 import { supabase } from '@/lib/supabase';
 import type { Session } from '@supabase/supabase-js';
+
+// Safely register LiveKit globals only in a dev build (Expo Go will skip this)
+if (Platform.OS !== 'web') {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const WebRTC = require('react-native-webrtc');
+    const {
+      RTCPeerConnection,
+      RTCSessionDescription,
+      RTCIceCandidate,
+      MediaStream,
+      MediaStreamTrack,
+      mediaDevices,
+    } = WebRTC;
+
+    (globalThis as any).RTCPeerConnection = RTCPeerConnection;
+    (globalThis as any).RTCSessionDescription = RTCSessionDescription;
+    (globalThis as any).RTCIceCandidate = RTCIceCandidate;
+    (globalThis as any).MediaStream = MediaStream;
+    (globalThis as any).MediaStreamTrack = MediaStreamTrack;
+    (globalThis as any).navigator = (globalThis as any).navigator || {};
+    (globalThis as any).navigator.mediaDevices = mediaDevices;
+  } catch (e) {
+    console.warn(
+      '[webrtc] RN WebRTC not linked (likely Expo Go). Build & open a dev build to enable WebRTC.'
+    );
+  }
+}
 
 SplashScreen.preventAutoHideAsync();
 
@@ -64,6 +94,4 @@ export default function RootLayout() {
       <StatusBar style="light" backgroundColor="#000000" />
     </>
   );
-
-  
 }
